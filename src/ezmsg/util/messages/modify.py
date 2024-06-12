@@ -13,11 +13,10 @@ def modify_axis(
     name_map: typing.Optional[typing.Dict[str, str]] = None
 ) -> typing.Generator[AxisArray, AxisArray, None]:
     # State variables
-    axis_arr_in = AxisArray(np.array([]), dims=[""])
     axis_arr_out = AxisArray(np.array([]), dims=[""])
 
     while True:
-        axis_arr_in = yield axis_arr_out
+        axis_arr_in: AxisArray = yield axis_arr_out
 
         if name_map is not None:
             new_dims = [name_map.get(old_k, old_k) for old_k in axis_arr_in.dims]
