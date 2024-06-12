@@ -1,3 +1,4 @@
+import copy
 from dataclasses import replace
 import typing
 
@@ -19,9 +20,9 @@ def modify_axis(
         axis_arr_in: AxisArray = yield axis_arr_out
 
         if name_map is not None:
-            new_dims = [name_map.get(old_k, old_k) for old_k in axis_arr_in.dims]
-            new_axes = {name_map.get(old_k, old_k): v for old_k, v in axis_arr_in.axes.items()}
-            axis_arr_out = replace(axis_arr_in, dims=new_dims, axes=new_axes)
+            axis_arr_out = copy.copy(axis_arr_in)
+            axis_arr_out.dims = [name_map.get(old_k, old_k) for old_k in axis_arr_in.dims]
+            axis_arr_out.axes = {name_map.get(old_k, old_k): v for old_k, v in axis_arr_in.axes.items()}
         else:
             axis_arr_out = axis_arr_in
 
@@ -33,5 +34,13 @@ class ModifyAxisSettings(ez.Settings):
 class ModifyAxis(GenAxisArray):
     SETTINGS: ModifyAxisSettings
 
+    INPUT_SIGNAL = ez.InputStream(AxisArray)
+    OUTPUT_SIGNAL = ez.OutputStream(AxisArray)
+
     def construct_generator(self):
         self.STATE.gen = modify_axis(name_map=self.SETTINGS.name_map)
+
+    @ez.subscriber(INPUT_SIGNAL, zero_copy=True)
+    @ez.publisher(OUTPUT_SIGNAL)
+    async def on_message(self, msg: AxisArray) -> typing.AsyncGenerator:
+        yield self.OUTPUT_SIGNAL, self.STATE.gen.send(msg)
