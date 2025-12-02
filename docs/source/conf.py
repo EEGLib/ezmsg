@@ -59,8 +59,13 @@ intersphinx_mapping = {
     "sphinx": ("https://www.sphinx-doc.org/en/master", None),
     "numpy": ("https://numpy.org/doc/stable", None),
     "ezmsg.sigproc": ("https://www.ezmsg.org/ezmsg-sigproc", None),
-    "ezmsg.lsl": ("https://www.ezmsg.org/ezmsg-lsl", None),
     "ezmsg.learn": ("https://www.ezmsg.org/ezmsg-learn", None),
+    "ezmsg.blackrock": ("https://www.ezmsg.org/ezmsg-blackrock", None),
+    "ezmsg.event": ("https://www.ezmsg.org/ezmsg-event", None),
+    "ezmsg.lsl": ("https://www.ezmsg.org/ezmsg-lsl", None),
+    "ezmsg.tools": ("https://www.ezmsg.org/ezmsg-tools", None),
+    "ezmsg.xdf": ("https://www.ezmsg.org/ezmsg-xdf", None),
+    "ezmsg.zmq": ("https://www.ezmsg.org/ezmsg-zmq", None),
 }
 intersphinx_disabled_domains = ["std"]
 
