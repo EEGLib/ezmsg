@@ -19,6 +19,8 @@ __all__ = [
     "Unit",
     "State",
     "run",
+    "GraphRunner",
+    "GraphRunnerStartError",
     "Complete",
     "NormalTermination",
     "GraphServer",
@@ -39,7 +41,7 @@ from .settings import Settings
 from .collection import Collection, NetworkDefinition
 from .unit import Unit, task, publisher, subscriber, main, timeit, process, thread
 from .stream import InputStream, OutputStream
-from .backend import run
+from .backend import run, GraphRunner, GraphRunnerStartError
 from .backendprocess import Complete, NormalTermination
 from .graphserver import GraphServer
 from .graphcontext import GraphContext
