@@ -9,7 +9,7 @@ from contextlib import contextmanager, suppress
 from .shm import SHMContext
 from .messagemarshal import MessageMarshal
 from .backpressure import Backpressure
-from .messagecache import MessageCache, CacheMiss
+from .messagecache import MessageCache
 from .graphserver import GraphService
 from .netprotocol import (
     Command,

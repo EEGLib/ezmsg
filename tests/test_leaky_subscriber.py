@@ -331,7 +331,7 @@ def test_leaky_subscriber_backpressure_integration():
     """
     from unittest.mock import MagicMock
     from ezmsg.core.subclient import Subscriber
-    from ezmsg.core.messagechannel import Channel, LeakyQueue
+    from ezmsg.core.messagechannel import Channel
 
     pub_id = uuid4()
     sub_id = uuid4()
