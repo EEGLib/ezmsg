@@ -63,6 +63,10 @@ class InputStream(Stream):
     they prevent slow consumers from blocking fast producers. If you need to reduce
     data transfer, consider filtering or downsampling at the publisher level.
 
+    **NOTE**: If a leaky subscriber has a max_queue size that is greater than or 
+    equal to any connected publisher's num_buffers, it can still cause backpressure
+    to those publishers! You will receive a warning if configured as such.
+
     Example usage::
 
         # Leaky subscriber that keeps at most 3 pending messages
@@ -77,7 +81,7 @@ class InputStream(Stream):
     :type msg_type: Any
     :param leaky: If True, drop oldest messages when queue is full (default: False)
     :type leaky: bool
-    :param max_queue: Maximum queue depth for leaky mode (required if leaky=True)
+    :param max_queue: Maximum queue depth for leaky mode (ignored if leaky=False)
     :type max_queue: int | None
     """
 
@@ -91,8 +95,6 @@ class InputStream(Stream):
         max_queue: int | None = None,
     ) -> None:
         super().__init__(msg_type)
-        if leaky and max_queue is None:
-            raise ValueError("max_queue must be set when leaky=True")
         if max_queue is not None and max_queue <= 0:
             raise ValueError("max_queue must be positive")
         self.leaky = leaky

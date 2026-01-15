@@ -113,7 +113,7 @@ class Subscriber:
         :type graph_address: AddressType | None
         :param leaky: If True, drop oldest messages when queue is full.
         :type leaky: bool
-        :param max_queue: Maximum queue size (required if leaky=True).
+        :param max_queue: Maximum queue size (ignored if leaky=False).
         :type max_queue: int | None
         :param kwargs: Additional keyword arguments (unused).
         """
@@ -129,7 +129,10 @@ class Subscriber:
         self._cur_pubs = set()
         self._channels = dict()
         if leaky:
-            self._incoming = LeakyQueue(max_queue, self._handle_dropped_notification)
+            self._incoming = LeakyQueue(
+                1 if max_queue is None else max_queue, 
+                self._handle_dropped_notification
+            )
         else:
             self._incoming = asyncio.Queue()
         self._initialized = asyncio.Event()
@@ -224,6 +227,18 @@ class Subscriber:
                         channel = await CHANNELS.register(
                             pub_id, self.id, self._incoming, self._graph_address
                         )
+
+                        if (
+                            isinstance(self._incoming, LeakyQueue) and 
+                            self._incoming.maxsize >= channel.num_buffers
+                        ):
+                            logger.warning(
+                                f"Leaky Subscriber {self.topic} may cause "
+                                f"backpressure in Publisher {channel.topic}."
+                                f"Subscriber's max queue size ({self._incoming.maxsize}) >= "
+                                f"Publisher's num_buffers ({channel.num_buffers})"
+                            )
+
                         self._channels[pub_id] = channel
 
                     for pub_id in set(self._cur_pubs - pub_ids):

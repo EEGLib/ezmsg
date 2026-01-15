@@ -21,10 +21,6 @@ def test_input_stream_leaky_configuration():
     assert stream.max_queue == 5
 
 
-def test_input_stream_leaky_requires_max_queue():
-    """Leaky mode requires max_queue to be set."""
-    with pytest.raises(ValueError, match="max_queue must be set"):
-        InputStream(float, leaky=True)
 
 
 def test_input_stream_max_queue_must_be_positive():
@@ -43,20 +39,22 @@ async def test_subscriber_leaky_queue_drops_oldest():
 
     queue = LeakyQueue(2)
 
+    pub1 = uuid4()
+
     # Fill the queue
-    await queue.put(("pub1", 1))
-    await queue.put(("pub1", 2))
+    await queue.put((pub1, 1))
+    await queue.put((pub1, 2))
     assert queue.qsize() == 2
 
     # Adding third item should drop the oldest
-    await queue.put(("pub1", 3))
+    await queue.put((pub1, 3))
     assert queue.qsize() == 2
 
     # Should get items 2 and 3 (1 was dropped)
     item1 = await queue.get()
     item2 = await queue.get()
-    assert item1 == ("pub1", 2)
-    assert item2 == ("pub1", 3)
+    assert item1 == (pub1, 2)
+    assert item2 == (pub1, 3)
 
 
 def test_subscriber_init_creates_leaky_queue():
@@ -151,10 +149,11 @@ async def test_leaky_queue_under_load():
     from ezmsg.core.messagechannel import LeakyQueue
 
     queue = LeakyQueue(3)
+    pub = uuid4()
 
     # Simulate fast producer
     for i in range(100):
-        await queue.put(("pub", i))
+        await queue.put((pub, i))
 
     # Queue should only have last 3 items
     assert queue.qsize() == 3
@@ -164,7 +163,7 @@ async def test_leaky_queue_under_load():
         items.append(await queue.get())
 
     # Should have the most recent items
-    assert items == [("pub", 97), ("pub", 98), ("pub", 99)]
+    assert items == [(pub, 97), (pub, 98), (pub, 99)]
 
 
 @pytest.mark.asyncio
@@ -179,20 +178,22 @@ async def test_leaky_queue_on_drop_callback():
 
     queue = LeakyQueue(2, on_drop)
 
+    pub = uuid4()
+
     # Fill the queue
-    await queue.put(("pub", 1))
-    await queue.put(("pub", 2))
+    await queue.put((pub, 1))
+    await queue.put((pub, 2))
     assert len(dropped_items) == 0
 
     # This should trigger drop of item 1
-    await queue.put(("pub", 3))
+    await queue.put((pub, 3))
     assert len(dropped_items) == 1
-    assert dropped_items[0] == ("pub", 1)
+    assert dropped_items[0] == (pub, 1)
 
     # This should trigger drop of item 2
-    await queue.put(("pub", 4))
+    await queue.put((pub, 4))
     assert len(dropped_items) == 2
-    assert dropped_items[1] == ("pub", 2)
+    assert dropped_items[1] == (pub, 2)
 
 
 @pytest.mark.asyncio
@@ -207,15 +208,17 @@ async def test_leaky_queue_on_drop_callback_put_nowait():
 
     queue = LeakyQueue(2, on_drop)
 
+    pub = uuid4()
+
     # Fill the queue
-    queue.put_nowait(("pub", 1))
-    queue.put_nowait(("pub", 2))
+    queue.put_nowait((pub, 1))
+    queue.put_nowait((pub, 2))
     assert len(dropped_items) == 0
 
     # This should trigger drop of item 1
-    queue.put_nowait(("pub", 3))
+    queue.put_nowait((pub, 3))
     assert len(dropped_items) == 1
-    assert dropped_items[0] == ("pub", 1)
+    assert dropped_items[0] == (pub, 1)
 
 
 def test_channel_release_without_get():
