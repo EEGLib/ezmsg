@@ -63,7 +63,7 @@ class InputStream(Stream):
     they prevent slow consumers from blocking fast producers. If you need to reduce
     data transfer, consider filtering or downsampling at the publisher level.
 
-    **NOTE**: If a leaky subscriber has a max_queue size that is greater than or 
+    **NOTE**: If a leaky subscriber has a max_queue size that is greater than or
     equal to any connected publisher's num_buffers, it can still cause backpressure
     to those publishers! You will receive a warning if configured as such.
 

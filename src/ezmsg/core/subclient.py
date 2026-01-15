@@ -98,7 +98,7 @@ class Subscriber:
         _guard=None,
         leaky: bool = False,
         max_queue: int | None = None,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Initialize a Subscriber instance.
@@ -130,8 +130,7 @@ class Subscriber:
         self._channels = dict()
         if leaky:
             self._incoming = LeakyQueue(
-                1 if max_queue is None else max_queue, 
-                self._handle_dropped_notification
+                1 if max_queue is None else max_queue, self._handle_dropped_notification
             )
         else:
             self._incoming = asyncio.Queue()
@@ -229,8 +228,8 @@ class Subscriber:
                         )
 
                         if (
-                            isinstance(self._incoming, LeakyQueue) and 
-                            self._incoming.maxsize >= channel.num_buffers
+                            isinstance(self._incoming, LeakyQueue)
+                            and self._incoming.maxsize >= channel.num_buffers
                         ):
                             logger.warning(
                                 f"Leaky Subscriber {self.topic} may cause "

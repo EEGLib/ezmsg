@@ -21,8 +21,6 @@ def test_input_stream_leaky_configuration():
     assert stream.max_queue == 5
 
 
-
-
 def test_input_stream_max_queue_must_be_positive():
     """max_queue must be a positive integer."""
     with pytest.raises(ValueError, match="must be positive"):
@@ -102,7 +100,9 @@ async def test_graphcontext_subscriber_passes_leaky_params():
 
     ctx = GraphContext(graph_address=None)
 
-    with patch('ezmsg.core.graphcontext.Subscriber.create', new_callable=AsyncMock) as mock_create:
+    with patch(
+        "ezmsg.core.graphcontext.Subscriber.create", new_callable=AsyncMock
+    ) as mock_create:
         mock_create.return_value = AsyncMock()
 
         await ctx.subscriber("test_topic", leaky=True, max_queue=3)
@@ -111,7 +111,7 @@ async def test_graphcontext_subscriber_passes_leaky_params():
             "test_topic",
             None,  # graph_address
             leaky=True,
-            max_queue=3
+            max_queue=3,
         )
 
 
@@ -381,11 +381,17 @@ def test_leaky_subscriber_backpressure_integration():
     assert sub._incoming.qsize() == 2
 
     # Verify backpressure for buf_idx=0 (msg_id=0) was released
-    assert chan.backpressure.available(0), "Backpressure for dropped msg should be released"
+    assert chan.backpressure.available(0), (
+        "Backpressure for dropped msg should be released"
+    )
 
     # Verify backpressure for buf_idx=1,2 (msg_id=1,2) is still held
-    assert not chan.backpressure.available(1), "Backpressure for queued msg should be held"
-    assert not chan.backpressure.available(2), "Backpressure for queued msg should be held"
+    assert not chan.backpressure.available(1), (
+        "Backpressure for queued msg should be held"
+    )
+    assert not chan.backpressure.available(2), (
+        "Backpressure for queued msg should be held"
+    )
 
     # Verify the acknowledge was called for the dropped message
     chan._acknowledge.assert_called_once_with(0)

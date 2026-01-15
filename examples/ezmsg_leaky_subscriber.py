@@ -93,8 +93,7 @@ class SlowSubscriber(ez.Unit):
         self.STATE.received_seqs.append(msg.seq)
 
         print(
-            f"[Subscriber] Processing seq={msg.seq:3d}, "
-            f"latency={latency_ms:6.0f}ms",
+            f"[Subscriber] Processing seq={msg.seq:3d}, latency={latency_ms:6.0f}ms",
             flush=True,
         )
 
