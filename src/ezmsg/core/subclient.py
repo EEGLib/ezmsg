@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from .graphserver import GraphService
 from .channelmanager import CHANNELS
-from .messagechannel import NotificationQueue, Channel
+from .messagechannel import NotificationQueue, LeakyQueue, Channel
 
 from .netprotocol import (
     AddressType,
@@ -91,11 +91,13 @@ class Subscriber:
         return sub
 
     def __init__(
-        self, 
-        id: UUID, 
-        topic: str, 
-        graph_address: AddressType | None, 
-        _guard = None, 
+        self,
+        id: UUID,
+        topic: str,
+        graph_address: AddressType | None,
+        _guard=None,
+        leaky: bool = False,
+        max_queue: int | None = None,
         **kwargs
     ) -> None:
         """
@@ -107,8 +109,12 @@ class Subscriber:
         :type id: UUID
         :param topic: The topic this subscriber listens to.
         :type topic: str
-        :param graph_service: Service for graph operations.
-        :type graph_service: GraphService
+        :param graph_address: Address of the graph server.
+        :type graph_address: AddressType | None
+        :param leaky: If True, drop oldest messages when queue is full.
+        :type leaky: bool
+        :param max_queue: Maximum queue size (required if leaky=True).
+        :type max_queue: int | None
         :param kwargs: Additional keyword arguments (unused).
         """
         if _guard is not self._SENTINEL:
@@ -121,9 +127,28 @@ class Subscriber:
         self._graph_address = graph_address
 
         self._cur_pubs = set()
-        self._incoming = asyncio.Queue()
         self._channels = dict()
+        if leaky:
+            self._incoming = LeakyQueue(max_queue, self._handle_dropped_notification)
+        else:
+            self._incoming = asyncio.Queue()
         self._initialized = asyncio.Event()
+
+    def _handle_dropped_notification(
+        self, notification: typing.Tuple[UUID, int]
+    ) -> None:
+        """
+        Handle a dropped notification by releasing backpressure.
+
+        Called by LeakyQueue when a notification is dropped to ensure
+        backpressure is properly released for messages that will never be read.
+
+        :param notification: Tuple of (publisher_id, message_id) that was dropped.
+        :type notification: tuple[UUID, int]
+        """
+        pub_id, msg_id = notification
+        if pub_id in self._channels:
+            self._channels[pub_id].release_without_get(msg_id, self.id)
 
     def close(self) -> None:
         """

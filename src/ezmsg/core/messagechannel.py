@@ -9,7 +9,7 @@ from contextlib import contextmanager, suppress
 from .shm import SHMContext
 from .messagemarshal import MessageMarshal
 from .backpressure import Backpressure
-from .messagecache import MessageCache
+from .messagecache import MessageCache, CacheMiss
 from .graphserver import GraphService
 from .netprotocol import (
     Command,
@@ -25,7 +25,48 @@ from .netprotocol import (
 logger = logging.getLogger("ezmsg")
 
 
-NotificationQueue = asyncio.Queue[typing.Tuple[UUID, int]]
+class LeakyQueue(asyncio.Queue[typing.Tuple[UUID, int]]):
+    """
+    An asyncio.Queue that drops oldest items when full.
+
+    When putting a new item into a full queue, the oldest item is
+    dropped to make room.
+
+    :param maxsize: Maximum queue size (must be positive)
+    :param on_drop: Optional callback called with dropped item when dropping
+    """
+
+    def __init__(
+        self,
+        maxsize: int,
+        on_drop: typing.Callable[[typing.Any], None] | None = None,
+    ):
+        super().__init__(maxsize=maxsize)
+        self._on_drop = on_drop
+
+    def _drop_oldest(self) -> None:
+        """Drop the oldest item from the queue, calling on_drop if set."""
+        try:
+            dropped = self.get_nowait()
+            if self._on_drop is not None:
+                self._on_drop(dropped)
+        except asyncio.QueueEmpty:
+            pass
+
+    async def put(self, item: typing.Tuple[UUID, int]) -> None:
+        """Put an item into the queue, dropping oldest if full."""
+        if self.full():
+            self._drop_oldest()
+        await super().put(item)
+
+    def put_nowait(self, item: typing.Tuple[UUID, int]) -> None:
+        """Put an item without blocking, dropping oldest if full."""
+        if self.full():
+            self._drop_oldest()
+        super().put_nowait(item)
+
+
+NotificationQueue = asyncio.Queue[typing.Tuple[UUID, int]] | LeakyQueue
 
 
 class Channel:
@@ -310,16 +351,41 @@ class Channel:
         try:
             yield self.cache[msg_id]
         finally:
-            buf_idx = msg_id % self.num_buffers
-            self.backpressure.free(client_id, buf_idx)
-            if self.backpressure.buffers[buf_idx].is_empty:
-                self.cache.release(msg_id)
+            self._release_backpressure(msg_id, client_id)
 
-                # If pub is in same process as this channel, avoid TCP
-                if self._local_backpressure is not None:
-                    self._local_backpressure.free(self.id, buf_idx)
-                else:
-                    self._acknowledge(msg_id)
+    def release_without_get(self, msg_id: int, client_id: UUID) -> None:
+        """
+        Release backpressure for a message without retrieving it.
+
+        Used by leaky subscribers when dropping notifications to ensure
+        backpressure is properly released for messages that will never be read.
+
+        :param msg_id: Message ID to release
+        :type msg_id: int
+        :param client_id: UUID of client releasing this message
+        :type client_id: UUID
+        """
+        self._release_backpressure(msg_id, client_id)
+
+    def _release_backpressure(self, msg_id: int, client_id: UUID) -> None:
+        """
+        Internal method to release backpressure for a message.
+
+        :param msg_id: Message ID to release
+        :type msg_id: int
+        :param client_id: UUID of client releasing this message
+        :type client_id: UUID
+        """
+        buf_idx = msg_id % self.num_buffers
+        self.backpressure.free(client_id, buf_idx)
+        if self.backpressure.buffers[buf_idx].is_empty:
+            self.cache.release(msg_id)
+
+            # If pub is in same process as this channel, avoid TCP
+            if self._local_backpressure is not None:
+                self._local_backpressure.free(self.id, buf_idx)
+            else:
+                self._acknowledge(msg_id)
 
     def _acknowledge(self, msg_id: int) -> None:
         try:

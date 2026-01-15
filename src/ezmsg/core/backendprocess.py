@@ -201,7 +201,12 @@ class DefaultBackendProcess(BackendProcess):
                     if isinstance(stream, InputStream):
                         logger.debug(f"Creating Subscriber from {stream}")
                         sub = asyncio.run_coroutine_threadsafe(
-                            context.subscriber(stream.address), loop
+                            context.subscriber(
+                                stream.address,
+                                leaky=stream.leaky,
+                                max_queue=stream.max_queue,
+                            ),
+                            loop,
                         ).result()
                         task_name = f"SUBSCRIBER|{stream.address}"
                         coro_callables[task_name] = partial(

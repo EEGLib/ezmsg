@@ -20,6 +20,8 @@ SUBSCRIBES_ATTR = "__ez_subscribes__"
 TIMEIT_ATTR = "__ez_timeit__"
 ZERO_COPY_ATTR = "__ez_zerocopy__"
 PROCESS_ATTR = "__ez_process__"
+LEAKY_ATTR = "__ez_leaky__"
+MAX_QUEUE_ATTR = "__ez_max_queue__"
 
 
 class UnitMeta(ComponentMeta):
@@ -195,6 +197,8 @@ def subscriber(stream: InputStream, zero_copy: bool = False):
             raise Exception(f"{func} cannot subscribe to more than one stream")
         setattr(func, SUBSCRIBES_ATTR, stream)
         setattr(func, ZERO_COPY_ATTR, zero_copy)
+        setattr(func, LEAKY_ATTR, stream.leaky)
+        setattr(func, MAX_QUEUE_ATTR, stream.max_queue)
         return task(func)
 
     return sub_factory
