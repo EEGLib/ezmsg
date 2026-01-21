@@ -164,6 +164,8 @@ class Channel:
         writer.write(Command.CHANNEL.value)
         writer.write(encode_str(id_str))
 
+        topic = await read_str(reader)
+
         shm = None
         shm_name = await read_str(reader)
         try:
@@ -184,6 +186,7 @@ class Channel:
         assert num_buffers > 0, "publisher reports invalid num_buffers"
 
         chan = cls(UUID(id_str), pub_id, num_buffers, shm, graph_address, _guard=cls._SENTINEL)
+        chan.topic = topic
 
         chan._graph_task = asyncio.create_task(
             chan._graph_connection(graph_reader, graph_writer),

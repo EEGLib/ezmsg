@@ -35,6 +35,7 @@ class Subscriber:
 
     id: UUID
     topic: str
+    leaky: bool
 
     _graph_address: AddressType | None
     _graph_task: asyncio.Task[None]
@@ -124,11 +125,12 @@ class Subscriber:
             )
         self.id = id
         self.topic = topic
+        self.leaky = leaky
         self._graph_address = graph_address
 
         self._cur_pubs = set()
         self._channels = dict()
-        if leaky:
+        if self.leaky:
             self._incoming = LeakyQueue(
                 1 if max_queue is None else max_queue, self._handle_dropped_notification
             )
@@ -227,15 +229,12 @@ class Subscriber:
                             pub_id, self.id, self._incoming, self._graph_address
                         )
 
-                        if (
-                            isinstance(self._incoming, LeakyQueue)
-                            and self._incoming.maxsize >= channel.num_buffers
-                        ):
+                        if self.leaky and self._incoming.maxsize >= channel.num_buffers:
                             logger.warning(
                                 f"Leaky Subscriber {self.topic} may cause "
-                                f"backpressure in Publisher {channel.topic}."
+                                f"backpressure in Publisher {channel.topic}. "
                                 f"Subscriber's max queue size ({self._incoming.maxsize}) >= "
-                                f"Publisher's num_buffers ({channel.num_buffers})"
+                                f"Publisher's num_buffers ({channel.num_buffers})."
                             )
 
                         self._channels[pub_id] = channel

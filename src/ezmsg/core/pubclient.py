@@ -329,6 +329,7 @@ class Publisher:
         if cmd == Command.CHANNEL.value:
             channel_id_str = await read_str(reader)
             channel_id = UUID(channel_id_str)
+            writer.write(encode_str(self.topic))
             writer.write(encode_str(self._shm.name))
             shm_ok = await reader.read(1) == Command.SHM_OK.value
             pid = await read_int(reader)

@@ -416,7 +416,6 @@ async def handle_subscriber(
     # allowing publishers to continue without blocking during slow processing.
     # Non-leaky subscribers use recv_zero_copy() to hold backpressure during
     # processing, which provides zero-copy performance but applies backpressure.
-    is_leaky = isinstance(sub._incoming, LeakyQueue)
 
     while True:
         if not callables:
@@ -424,7 +423,7 @@ async def handle_subscriber(
             await sub.wait_closed()
             break
 
-        if is_leaky:
+        if sub.leaky:
             msg = await sub.recv()
             try:
                 for callable in list(callables):

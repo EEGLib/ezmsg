@@ -13,7 +13,8 @@
 # rather than processing a growing backlog of stale messages.
 
 import asyncio
-from collections.abc import AsyncGenerator
+import typing
+
 from dataclasses import dataclass, field
 
 import ezmsg.core as ez
@@ -40,9 +41,7 @@ class FastPublisher(ez.Unit):
     OUTPUT = ez.OutputStream(TimestampedMessage, num_buffers=32)
 
     @ez.publisher(OUTPUT)
-    async def publish(self) -> AsyncGenerator:
-        # Small delay to ensure subscriber is ready
-        await asyncio.sleep(0.5)
+    async def publish(self) -> typing.AsyncGenerator:
 
         for seq in range(self.SETTINGS.num_messages):
             msg = TimestampedMessage(seq=seq)
@@ -60,8 +59,8 @@ class SlowSubscriberSettings(ez.Settings):
 
 
 class SlowSubscriberState(ez.State):
+    received_seqs: list
     received_count: int = 0
-    received_seqs: list = None
     total_latency: float = 0.0
 
 
@@ -76,9 +75,8 @@ class SlowSubscriber(ez.Unit):
     SETTINGS = SlowSubscriberSettings
     STATE = SlowSubscriberState
 
-    # Leaky input stream with max queue of 3 messages
-    # When the queue fills up, oldest messages are dropped
-    INPUT = ez.InputStream(TimestampedMessage, leaky=True, max_queue=3)
+    # Leaky input stream; oldest messages are dropped
+    INPUT = ez.InputStream(TimestampedMessage, leaky=True)
 
     async def initialize(self) -> None:
         self.STATE.received_seqs = []
