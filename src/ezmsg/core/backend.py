@@ -8,6 +8,8 @@ from threading import BrokenBarrierError
 from multiprocessing import Event, Barrier
 from multiprocessing.synchronize import Event as EventType
 from multiprocessing.synchronize import Barrier as BarrierType
+from multiprocessing.connection import wait, Connection
+from socket import socket
 
 from .netprotocol import DEFAULT_SHM_SIZE, AddressType
 
@@ -359,8 +361,18 @@ class GraphRunner:
             self._spawned_processes.append(proc)
 
     def _join_spawned_processes(self) -> None:
-        for proc in self._spawned_processes:
-            proc.join()
+        sentinels: dict[Connection | socket | int, BackendProcess] = {
+            proc.sentinel: proc for proc in self._spawned_processes
+        }
+
+        # Poll sentinels so KeyboardInterrupt remains responsive (notably on Windows)
+        while len(sentinels):
+            done = wait(list(sentinels.keys()), timeout=0.1)
+
+            for sentinel in done:
+                proc = sentinels.pop(sentinel, None)
+                if proc is not None:
+                    proc.join()
 
     def _run_main_process(self) -> None:
         if self._execution_context is None or self._loop is None:
