@@ -20,6 +20,7 @@ from typing import Any
 
 from .stream import Stream, InputStream, OutputStream
 from .unit import Unit, TIMEIT_ATTR, SUBSCRIBES_ATTR, ZERO_COPY_ATTR
+from .messagechannel import LeakyQueue
 
 from .graphcontext import GraphContext
 from .pubclient import Publisher
@@ -201,7 +202,12 @@ class DefaultBackendProcess(BackendProcess):
                     if isinstance(stream, InputStream):
                         logger.debug(f"Creating Subscriber from {stream}")
                         sub = asyncio.run_coroutine_threadsafe(
-                            context.subscriber(stream.address), loop
+                            context.subscriber(
+                                stream.address,
+                                leaky=stream.leaky,
+                                max_queue=stream.max_queue,
+                            ),
+                            loop,
                         ).result()
                         task_name = f"SUBSCRIBER|{stream.address}"
                         coro_callables[task_name] = partial(
@@ -406,12 +412,19 @@ async def handle_subscriber(
     :param callables: Set of async callables to invoke with messages.
     :type callables: set[Callable[..., Coroutine[Any, Any, None]]]
     """
+    # Leaky subscribers use recv() to copy and release backpressure immediately,
+    # allowing publishers to continue without blocking during slow processing.
+    # Non-leaky subscribers use recv_zero_copy() to hold backpressure during
+    # processing, which provides zero-copy performance but applies backpressure.
+
     while True:
         if not callables:
             sub.close()
             await sub.wait_closed()
             break
-        async with sub.recv_zero_copy() as msg:
+
+        if sub.leaky:
+            msg = await sub.recv()
             try:
                 for callable in list(callables):
                     try:
@@ -420,6 +433,16 @@ async def handle_subscriber(
                         callables.remove(callable)
             finally:
                 del msg
+        else:
+            async with sub.recv_zero_copy() as msg:
+                try:
+                    for callable in list(callables):
+                        try:
+                            await callable(msg)
+                        except (Complete, NormalTermination):
+                            callables.remove(callable)
+                finally:
+                    del msg
 
         if len(callables) > 1:
             await asyncio.sleep(0)

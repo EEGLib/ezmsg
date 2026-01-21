@@ -33,12 +33,78 @@ class InputStream(Stream):
     InputStream represents a channel that receives messages from other components.
     Units can subscribe to InputStreams to process incoming messages.
 
+    Leaky Subscribers
+    -----------------
+
+    By default, ezmsg uses backpressure to prevent fast publishers from overwhelming
+    slow subscribers. When a subscriber can't keep up, the publisher blocks until
+    the subscriber catches up. This guarantees no message loss but can cause latency
+    buildup in real-time applications.
+
+    Setting ``leaky=True`` creates a "leaky" subscriber that drops old messages
+    instead of applying backpressure. This is useful when you need the most recent
+    data rather than processing a growing backlog of stale messages.
+
+    **Architecture**: The leaky behavior is implemented at the subscriber's
+    notification queue, *after* message serialization and transport. This means:
+
+    - Publishers still serialize and transmit every message (to shared memory or TCP)
+    - The Channel still receives and caches every message
+    - Dropping occurs when the subscriber's notification queue is full
+    - Backpressure is properly released for dropped messages (ACKs sent to publisher)
+
+    This design ensures that:
+
+    1. One leaky subscriber doesn't affect other subscribers to the same topic
+    2. The publisher's buffer management remains consistent
+    3. Backpressure accounting stays correct (no resource leaks)
+
+    **Trade-offs**: Leaky subscribers don't reduce serialization or network overhead;
+    they prevent slow consumers from blocking fast producers. If you need to reduce
+    data transfer, consider filtering or downsampling at the publisher level.
+
+    **NOTE**: If a leaky subscriber has a max_queue size that is greater than or
+    equal to any connected publisher's num_buffers, it can still cause backpressure
+    to those publishers! You will receive a warning if configured as such.
+
+    Example usage::
+
+        # Leaky subscriber that keeps at most 3 pending messages
+        INPUT = ez.InputStream(MyMessage, leaky=True, max_queue=3)
+
+        @ez.subscriber(INPUT)
+        async def process(self, msg: MyMessage) -> None:
+            # Will only see recent messages; older ones dropped if queue fills
+            await slow_processing(msg)
+
     :param msg_type: The type of messages this input stream will receive
     :type msg_type: Any
+    :param leaky: If True, drop oldest messages when queue is full (default: False)
+    :type leaky: bool
+    :param max_queue: Maximum queue depth for leaky mode (ignored if leaky=False)
+    :type max_queue: int | None
     """
 
+    leaky: bool
+    max_queue: int | None
+
+    def __init__(
+        self,
+        msg_type: Any,
+        leaky: bool = False,
+        max_queue: int | None = None,
+    ) -> None:
+        super().__init__(msg_type)
+        if max_queue is not None and max_queue <= 0:
+            raise ValueError("max_queue must be positive")
+        self.leaky = leaky
+        self.max_queue = max_queue
+
     def __repr__(self) -> str:
-        return f"Input{super().__repr__()}()"
+        base = f"Input{super().__repr__()}"
+        if self.leaky:
+            return f"{base}(leaky=True, max_queue={self.max_queue})"
+        return f"{base}()"
 
 
 class OutputStream(Stream):

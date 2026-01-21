@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from .graphserver import GraphService
 from .channelmanager import CHANNELS
-from .messagechannel import NotificationQueue, Channel
+from .messagechannel import NotificationQueue, LeakyQueue, Channel
 
 from .netprotocol import (
     AddressType,
@@ -35,6 +35,7 @@ class Subscriber:
 
     id: UUID
     topic: str
+    leaky: bool
 
     _graph_address: AddressType | None
     _graph_task: asyncio.Task[None]
@@ -91,12 +92,14 @@ class Subscriber:
         return sub
 
     def __init__(
-        self, 
-        id: UUID, 
-        topic: str, 
-        graph_address: AddressType | None, 
-        _guard = None, 
-        **kwargs
+        self,
+        id: UUID,
+        topic: str,
+        graph_address: AddressType | None,
+        _guard=None,
+        leaky: bool = False,
+        max_queue: int | None = None,
+        **kwargs,
     ) -> None:
         """
         Initialize a Subscriber instance.
@@ -107,8 +110,12 @@ class Subscriber:
         :type id: UUID
         :param topic: The topic this subscriber listens to.
         :type topic: str
-        :param graph_service: Service for graph operations.
-        :type graph_service: GraphService
+        :param graph_address: Address of the graph server.
+        :type graph_address: AddressType | None
+        :param leaky: If True, drop oldest messages when queue is full.
+        :type leaky: bool
+        :param max_queue: Maximum queue size (ignored if leaky=False).
+        :type max_queue: int | None
         :param kwargs: Additional keyword arguments (unused).
         """
         if _guard is not self._SENTINEL:
@@ -118,12 +125,34 @@ class Subscriber:
             )
         self.id = id
         self.topic = topic
+        self.leaky = leaky
         self._graph_address = graph_address
 
         self._cur_pubs = set()
-        self._incoming = asyncio.Queue()
         self._channels = dict()
+        if self.leaky:
+            self._incoming = LeakyQueue(
+                1 if max_queue is None else max_queue, self._handle_dropped_notification
+            )
+        else:
+            self._incoming = asyncio.Queue()
         self._initialized = asyncio.Event()
+
+    def _handle_dropped_notification(
+        self, notification: typing.Tuple[UUID, int]
+    ) -> None:
+        """
+        Handle a dropped notification by releasing backpressure.
+
+        Called by LeakyQueue when a notification is dropped to ensure
+        backpressure is properly released for messages that will never be read.
+
+        :param notification: Tuple of (publisher_id, message_id) that was dropped.
+        :type notification: tuple[UUID, int]
+        """
+        pub_id, msg_id = notification
+        if pub_id in self._channels:
+            self._channels[pub_id].release_without_get(msg_id, self.id)
 
     def close(self) -> None:
         """
@@ -199,6 +228,15 @@ class Subscriber:
                         channel = await CHANNELS.register(
                             pub_id, self.id, self._incoming, self._graph_address
                         )
+
+                        if self.leaky and self._incoming.maxsize >= channel.num_buffers:
+                            logger.warning(
+                                f"Leaky Subscriber {self.topic} may cause "
+                                f"backpressure in Publisher {channel.topic}. "
+                                f"Subscriber's max queue size ({self._incoming.maxsize}) >= "
+                                f"Publisher's num_buffers ({channel.num_buffers})."
+                            )
+
                         self._channels[pub_id] = channel
 
                     for pub_id in set(self._cur_pubs - pub_ids):
