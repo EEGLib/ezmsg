@@ -188,12 +188,8 @@ class GraphRunner:
         profiler_log_name: str | None = None,
         **components_kwargs: Component,
     ) -> None:
-        if components is not None and isinstance(components, Component):
-            components = {"SYSTEM": components}
-            logger.warning(
-                "Passing a single Component without naming the Component is now Deprecated."
-            )
-        components = either_dict_or_kwargs(components, components_kwargs, "run")
+            
+        components = either_dict_or_kwargs(components, components_kwargs, "GraphRunner")
         if components is None:
             raise ValueError("Must supply at least one component to run")
 
@@ -493,6 +489,14 @@ def run(
     .. note::
        The old method :obj:`run_system` has been deprecated and uses ``run()`` instead.
     """
+    if components is not None and isinstance(components, Component):
+        components = {"SYSTEM": components}
+        logger.warning(
+            "Passing a single Component without naming the Component is now Deprecated."
+        )
+        
+    components = either_dict_or_kwargs(components, components_kwargs, "run")
+    
     runner = GraphRunner(
         components=components,
         root_name=root_name,
@@ -502,8 +506,8 @@ def run(
         graph_address=graph_address,
         force_single_process=force_single_process,
         profiler_log_name=profiler_log_name,
-        **components_kwargs,
     )
+    
     runner.run_blocking()
 
 
