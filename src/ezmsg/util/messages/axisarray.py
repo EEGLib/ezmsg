@@ -719,6 +719,30 @@ def sliding_win_oneaxis(
     if -in_arr.ndim <= axis < 0:
         axis = in_arr.ndim + axis
 
+    if is_numpy_array(in_arr) or is_cupy_array(in_arr):
+        return _sliding_win_strided(in_arr, nwin, axis, step)
+
+    # Generic path for Array API backends without stride tricks (MLX, JAX, PyTorch, etc.)
+    xp = get_namespace(in_arr)
+    n_windows = in_arr.shape[axis] - (nwin - 1)
+    slices = [slice(None)] * in_arr.ndim
+    windows = []
+    for i in range(0, n_windows, step):
+        slices[axis] = slice(i, i + nwin)
+        windows.append(in_arr[tuple(slices)])
+    if len(windows) == 0:
+        # nwin == 0 or nwin > shape[axis]: produce an empty array with the right shape.
+        out_shape = (
+            in_arr.shape[:axis]
+            + (0, nwin)
+            + in_arr.shape[axis + 1 :]
+        )
+        return xp.zeros(out_shape, dtype=in_arr.dtype)
+    return xp.stack(windows, axis=axis)
+
+
+def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1):
+    """Stride-tricks fast path for numpy and cupy arrays."""
     is_f_order = in_arr.flags.f_contiguous and not in_arr.flags.c_contiguous
 
     out_shape = (
@@ -736,16 +760,13 @@ def sliding_win_oneaxis(
     )
 
     if is_numpy_array(in_arr):
-        from numpy.lib.stride_tricks import as_strided  # type: ignore
         from functools import partial
+        from numpy.lib.stride_tricks import as_strided  # type: ignore
 
         as_strided = partial(as_strided, writeable=False)
     elif is_cupy_array(in_arr):
         from cupy.lib.stride_tricks import as_strided  # type: ignore
-    else:
-        raise Exception(
-            f"Unsupported array module for sliding_win_oneaxis: {get_namespace(in_arr)}"
-        )
+
     result = as_strided(in_arr, strides=out_strides, shape=out_shape)
     if step > 1:
         result = slice_along_axis(result, slice(None, None, step), axis)

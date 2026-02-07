@@ -275,6 +275,49 @@ def test_sliding_win_oneaxis(nwin: int, axis: int, step: int):
     assert np.shares_memory(res, expected)
 
 
+import platform
+
+_has_mlx = importlib.util.find_spec("mlx") is not None
+requires_mlx = pytest.mark.skipif(
+    not _has_mlx or platform.machine() != "arm64" or platform.system() != "Darwin",
+    reason="Requires MLX on Apple Silicon",
+)
+
+
+@requires_mlx
+@pytest.mark.parametrize("nwin", [0, 3, 8])
+@pytest.mark.parametrize("axis", [0, 1, 2, -1, 3, -4])
+@pytest.mark.parametrize("step", [1, 2])
+def test_sliding_win_oneaxis_mlx(nwin: int, axis: int, step: int):
+    """Test the generic (non-strided) path using MLX arrays."""
+    import mlx.core as mx
+
+    dims = [4, 5, 6]
+    np_data = np.arange(np.prod(dims)).reshape(dims)
+    mx_data = mx.array(np_data)
+
+    if axis < -len(dims) or axis >= len(dims):
+        with pytest.raises(IndexError):
+            sliding_win_oneaxis(mx_data, nwin, axis, step)
+        return
+
+    if nwin > dims[axis]:
+        # Generic path returns empty array instead of raising (see docstring note).
+        res = sliding_win_oneaxis(mx_data, nwin, axis, step)
+        assert np.asarray(res).size == 0
+        return
+
+    res = sliding_win_oneaxis(mx_data, nwin, axis, step)
+
+    if nwin == 0:
+        assert np.asarray(res).size == 0
+        return
+
+    # Compare against the numpy strided result.
+    expected = sliding_win_oneaxis(np_data, nwin, axis, step)
+    np.testing.assert_array_equal(np.asarray(res), expected)
+
+
 def xarray_available() -> bool:
     return importlib.util.find_spec("xarray") is not None
 
