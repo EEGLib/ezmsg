@@ -719,11 +719,13 @@ def sliding_win_oneaxis(
     if -in_arr.ndim <= axis < 0:
         axis = in_arr.ndim + axis
 
-    if is_numpy_array(in_arr) or is_cupy_array(in_arr):
-        return _sliding_win_strided(in_arr, nwin, axis, step)
-
-    # Generic path for Array API backends without stride tricks (MLX, JAX, PyTorch, etc.)
     xp = get_namespace(in_arr)
+
+    # Fast path: backends with as_strided (numpy, cupy, MLX, …).
+    if hasattr(in_arr, "strides") or hasattr(xp, "as_strided"):
+        return _sliding_win_strided(in_arr, nwin, axis, step, xp=xp)
+
+    # Generic fallback for Array API backends without as_strided (JAX, PyTorch, etc.)
     n_windows = in_arr.shape[axis] - (nwin - 1)
     slices = [slice(None)] * in_arr.ndim
     windows = []
@@ -741,33 +743,53 @@ def sliding_win_oneaxis(
     return xp.stack(windows, axis=axis)
 
 
-def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1):
-    """Stride-tricks fast path for numpy and cupy arrays."""
-    is_f_order = in_arr.flags.f_contiguous and not in_arr.flags.c_contiguous
+def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
+    """Strided sliding-window for numpy, cupy, and backends with ``as_strided``.
+
+    Arrays that expose ``.strides`` (numpy, cupy) use byte strides read
+    directly from the array.  Other backends (e.g. MLX) have element-based
+    ``xp.as_strided``; element strides are computed from the shape assuming
+    row-major (C-order) layout.
+    """
+    n_windows = in_arr.shape[axis] - (nwin - 1)
+    if n_windows < 0:
+        raise ValueError("negative dimensions are not allowed")
 
     out_shape = (
         in_arr.shape[:axis]
-        + (in_arr.shape[axis] - (nwin - 1),)
-        + (nwin,)
+        + (n_windows, nwin)
         + in_arr.shape[axis + 1 :]
     )
 
-    stride_axis = in_arr.strides[axis]
+    if hasattr(in_arr, "strides"):
+        # numpy / cupy: byte strides directly from the array.
+        in_strides = in_arr.strides
+    else:
+        # Other backends (e.g. MLX): row-major element strides.
+        in_strides = []
+        prod = 1
+        for s in reversed(in_arr.shape):
+            in_strides.append(prod)
+            prod *= s
+        in_strides = tuple(reversed(in_strides))
+
     out_strides = (
-        in_arr.strides[:axis]
-        + ((stride_axis,) * 2 if not is_f_order else (stride_axis,) * 2)
-        + in_arr.strides[axis + 1 :]
+        in_strides[:axis]
+        + (in_strides[axis], in_strides[axis])
+        + in_strides[axis + 1 :]
     )
 
-    if is_numpy_array(in_arr):
+    if hasattr(xp, "as_strided"):
+        as_strided_fn = xp.as_strided
+    elif is_numpy_array(in_arr):
         from functools import partial
         from numpy.lib.stride_tricks import as_strided  # type: ignore
 
-        as_strided = partial(as_strided, writeable=False)
-    elif is_cupy_array(in_arr):
-        from cupy.lib.stride_tricks import as_strided  # type: ignore
+        as_strided_fn = partial(as_strided, writeable=False)
+    else:
+        from cupy.lib.stride_tricks import as_strided as as_strided_fn  # type: ignore
 
-    result = as_strided(in_arr, strides=out_strides, shape=out_shape)
+    result = as_strided_fn(in_arr, strides=out_strides, shape=out_shape)
     if step > 1:
         result = slice_along_axis(result, slice(None, None, step), axis)
     return result

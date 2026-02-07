@@ -302,9 +302,8 @@ def test_sliding_win_oneaxis_mlx(nwin: int, axis: int, step: int):
         return
 
     if nwin > dims[axis]:
-        # Generic path returns empty array instead of raising (see docstring note).
-        res = sliding_win_oneaxis(mx_data, nwin, axis, step)
-        assert np.asarray(res).size == 0
+        with pytest.raises(ValueError):
+            sliding_win_oneaxis(mx_data, nwin, axis, step)
         return
 
     res = sliding_win_oneaxis(mx_data, nwin, axis, step)
