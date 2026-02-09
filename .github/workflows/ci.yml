@@ -35,4 +35,4 @@ jobs:
         run: uv sync
 
       - name: Run tests
-        run: uv run pytest tests
+        run: uv run pytest tests --benchmark-disable
