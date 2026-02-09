@@ -2,7 +2,7 @@ from abc import abstractmethod, ABC
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import field, dataclass
-from array_api_compat import get_namespace, is_numpy_array, is_torch_array
+from array_api_compat import get_namespace, is_cupy_array, is_numpy_array, is_torch_array
 import math
 import typing
 import warnings
@@ -779,8 +779,10 @@ def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
         from numpy.lib.stride_tricks import as_strided  # type: ignore
 
         as_strided_fn = partial(as_strided, writeable=False)
-    else:
+    elif is_cupy_array(in_arr):
         from cupy.lib.stride_tricks import as_strided as as_strided_fn  # type: ignore
+    else:
+        raise TypeError(f"Unsupported array type for as_strided: {type(in_arr)}")
 
     result = as_strided_fn(in_arr, strides=out_strides, shape=out_shape)
     if step > 1:
