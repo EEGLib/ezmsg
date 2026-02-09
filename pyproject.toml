@@ -38,6 +38,7 @@ test = [
     "pytest-cov>=6.2.1",
     "xarray>=2025.6.1",
     "psutil>=7.1.0",
+    "pytest-benchmark>=5.2.3",
 ]
 docs = [
   {include-group = "axisarray"},

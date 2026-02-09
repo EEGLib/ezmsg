@@ -289,7 +289,7 @@ requires_mlx = pytest.mark.skipif(
 @pytest.mark.parametrize("axis", [0, 1, 2, -1, 3, -4])
 @pytest.mark.parametrize("step", [1, 2])
 def test_sliding_win_oneaxis_mlx(nwin: int, axis: int, step: int):
-    """Test the generic (non-strided) path using MLX arrays."""
+    """Test the strided path using MLX arrays."""
     import mlx.core as mx
 
     dims = [4, 5, 6]
@@ -315,6 +315,65 @@ def test_sliding_win_oneaxis_mlx(nwin: int, axis: int, step: int):
     # Compare against the numpy strided result.
     expected = sliding_win_oneaxis(np_data, nwin, axis, step)
     np.testing.assert_array_equal(np.asarray(res), expected)
+
+
+@pytest.mark.parametrize("nwin", [0, 3, 8])
+@pytest.mark.parametrize("axis", [0, 1, 2, -1])
+@pytest.mark.parametrize("step", [1, 2])
+def test_sliding_win_oneaxis_generic(nwin: int, axis: int, step: int):
+    """Test the generic (take+reshape) fallback path using numpy arrays."""
+    from ezmsg.util.messages.axisarray import _sliding_win_generic
+
+    dims = [4, 5, 6]
+    data = np.arange(np.prod(dims)).reshape(dims)
+
+    # Normalize axis the same way sliding_win_oneaxis does before calling _generic.
+    norm_axis = axis if axis >= 0 else len(dims) + axis
+
+    if nwin > dims[norm_axis]:
+        with pytest.raises(ValueError):
+            _sliding_win_generic(data, nwin, norm_axis, step, xp=np)
+        return
+
+    res = _sliding_win_generic(data, nwin, norm_axis, step, xp=np)
+
+    if nwin == 0:
+        assert res.size == 0
+        return
+
+    # Compare against the strided numpy result.
+    expected = sliding_win_oneaxis(data, nwin, axis, step)
+    np.testing.assert_array_equal(res, expected)
+
+
+@pytest.mark.benchmark(group="sliding_win")
+@pytest.mark.parametrize(
+    "shape,axis,nwin,step",
+    [
+        ((100, 64), 0, 50, 1),       # (time, channels) — typical EEG window
+        ((1000, 32), 0, 256, 64),     # large time axis with step
+        ((8, 1000, 16), 1, 100, 10),  # middle axis
+    ],
+    ids=["100x64_win50", "1000x32_win256_step64", "8x1000x16_win100_step10"],
+)
+class TestSlidingWinBenchmark:
+    def test_strided(self, benchmark, shape, axis, nwin, step):
+        data = np.random.randn(*shape)
+        benchmark(sliding_win_oneaxis, data, nwin, axis, step)
+
+    def test_generic(self, benchmark, shape, axis, nwin, step):
+        from ezmsg.util.messages.axisarray import _sliding_win_generic
+
+        data = np.random.randn(*shape)
+        norm_axis = axis if axis >= 0 else len(shape) + axis
+        benchmark(_sliding_win_generic, data, nwin, norm_axis, step, xp=np)
+
+    @requires_mlx
+    def test_mlx_strided(self, benchmark, shape, axis, nwin, step):
+        import mlx.core as mx
+
+        data = mx.array(np.random.randn(*shape))
+        benchmark(sliding_win_oneaxis, data, nwin, axis, step)
 
 
 def xarray_available() -> bool:

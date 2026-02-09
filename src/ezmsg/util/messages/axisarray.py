@@ -2,7 +2,7 @@ from abc import abstractmethod, ABC
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import field, dataclass
-from array_api_compat import get_namespace, is_cupy_array, is_numpy_array
+from array_api_compat import get_namespace, is_numpy_array, is_torch_array
 import math
 import typing
 import warnings
@@ -721,26 +721,12 @@ def sliding_win_oneaxis(
 
     xp = get_namespace(in_arr)
 
-    # Fast path: backends with as_strided (numpy, cupy, MLX, …).
-    if hasattr(in_arr, "strides") or hasattr(xp, "as_strided"):
+    # Fast path: backends with as_strided (numpy, cupy, MLX, PyTorch, …).
+    if hasattr(in_arr, "strides") or hasattr(xp, "as_strided") or is_torch_array(in_arr):
         return _sliding_win_strided(in_arr, nwin, axis, step, xp=xp)
 
-    # Generic fallback for Array API backends without as_strided (JAX, PyTorch, etc.)
-    n_windows = in_arr.shape[axis] - (nwin - 1)
-    slices = [slice(None)] * in_arr.ndim
-    windows = []
-    for i in range(0, n_windows, step):
-        slices[axis] = slice(i, i + nwin)
-        windows.append(in_arr[tuple(slices)])
-    if len(windows) == 0:
-        # nwin == 0 or nwin > shape[axis]: produce an empty array with the right shape.
-        out_shape = (
-            in_arr.shape[:axis]
-            + (0, nwin)
-            + in_arr.shape[axis + 1 :]
-        )
-        return xp.zeros(out_shape, dtype=in_arr.dtype)
-    return xp.stack(windows, axis=axis)
+    # Generic fallback for Array API backends without as_strided (JAX, etc.)
+    return _sliding_win_generic(in_arr, nwin, axis, step, xp=xp)
 
 
 def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
@@ -764,6 +750,9 @@ def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
     if hasattr(in_arr, "strides"):
         # numpy / cupy: byte strides directly from the array.
         in_strides = in_arr.strides
+    elif is_torch_array(in_arr):
+        # PyTorch: element strides via .stride() method.
+        in_strides = tuple(in_arr.stride())
     else:
         # Other backends (e.g. MLX): row-major element strides.
         in_strides = []
@@ -781,6 +770,10 @@ def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
 
     if hasattr(xp, "as_strided"):
         as_strided_fn = xp.as_strided
+    elif is_torch_array(in_arr):
+        import torch
+
+        as_strided_fn = lambda x, *, shape, strides: torch.as_strided(x, shape, strides)
     elif is_numpy_array(in_arr):
         from functools import partial
         from numpy.lib.stride_tricks import as_strided  # type: ignore
@@ -793,6 +786,34 @@ def _sliding_win_strided(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
     if step > 1:
         result = slice_along_axis(result, slice(None, None, step), axis)
     return result
+
+
+def _sliding_win_generic(in_arr, nwin: int, axis: int, step: int = 1, *, xp):
+    """Generic sliding-window for Array API backends without ``as_strided``.
+
+    Uses vectorized take+reshape instead of a Python loop, reducing the
+    operation to a constant number of array operations regardless of
+    window count.
+    """
+    n_windows = in_arr.shape[axis] - (nwin - 1)
+    if n_windows < 0:
+        raise ValueError("negative dimensions are not allowed")
+
+    if nwin == 0:
+        out_shape = (
+            in_arr.shape[:axis] + (n_windows, 0) + in_arr.shape[axis + 1 :]
+        )
+        return xp.zeros(out_shape, dtype=in_arr.dtype)
+
+    starts = xp.arange(0, n_windows, step)          # (n_out,)
+    offsets = xp.arange(nwin)                        # (nwin,)
+    indices_2d = starts[:, None] + offsets[None, :]  # (n_out, nwin)
+    n_out = indices_2d.shape[0]
+    flat_indices = xp.reshape(indices_2d, (-1,))     # (n_out * nwin,)
+
+    gathered = xp.take(in_arr, flat_indices, axis=axis)
+    new_shape = in_arr.shape[:axis] + (n_out, nwin) + in_arr.shape[axis + 1 :]
+    return xp.reshape(gathered, new_shape)
 
 
 def _as2d(
