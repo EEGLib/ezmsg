@@ -25,6 +25,7 @@ dev = [
   {include-group = "test"},
   "pre-commit>=4.3.0",
   "viztracer>=1.0.4",
+  "mlx>=0.18.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 lint = [
     "flake8>=7.3.0",
@@ -37,6 +38,7 @@ test = [
     "pytest-cov>=6.2.1",
     "xarray>=2025.6.1",
     "psutil>=7.1.0",
+    "pytest-benchmark>=5.2.3",
 ]
 docs = [
   {include-group = "axisarray"},
