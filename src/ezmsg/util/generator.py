@@ -1,3 +1,15 @@
+"""
+Generator-based message processing decorators (legacy).
+
+.. note::
+    For new code, prefer ``ezmsg.baseproc`` (BaseTransformer, BaseProducer, etc.)
+    over the generator pattern in this module. The baseproc classes provide a cleaner
+    separation of state management, hashing, and processing, and are the recommended
+    approach for all new ezmsg units.
+
+    This module is maintained for backward compatibility and simple stateless use cases.
+"""
+
 import ezmsg.core as ez
 import traceback
 from collections.abc import AsyncGenerator, Callable, Generator
