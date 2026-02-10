@@ -1,77 +1,138 @@
-import logging
+import typing
 
-from uuid import UUID
-from contextlib import contextmanager
-
-from .shmserver import SHMContext
-from .messagemarshal import MessageMarshal, UninitializedMemory
-
-from typing import Dict, Any, Optional, List, Generator
-
-logger = logging.getLogger("ezmsg")
+from .messagemarshal import MessageMarshal
 
 
-class CacheMiss(Exception): ...
+class CacheMiss(Exception): 
+    """
+    Exception raised when a requested message is not found in cache.
+    
+    This occurs when trying to retrieve a message that has been evicted
+    from the cache or was never stored in the first place.
+    """
 
 
-class Cache:
-    """shared-memory backed cache for objects"""
+class CacheEntry(typing.NamedTuple):
+    object: typing.Any
+    msg_id: int
+    context: typing.ContextManager | None
+    memory: memoryview | None
 
-    num_buffers: int
-    cache: List[Any]
-    cache_id: List[Optional[int]]
+
+class MessageCache:
+    """
+    Cache for memoryview-backed objects.
+    
+    Provides a buffer cache that can store objects in memory 
+    enabling efficient message passing between
+    processes with automatic eviction based on buffer age.
+    """
+    _cache: list[CacheEntry | None]
 
     def __init__(self, num_buffers: int) -> None:
-        self.num_buffers = num_buffers
-        self.cache_id = [None] * self.num_buffers
-        self.cache = [None] * self.num_buffers
+        """
+        Initialize the cache with specified number of buffers.
+        
+        :param num_buffers: Number of cache buffers to maintain.
+        :type num_buffers: int
+        """
+        self._cache = [None] * num_buffers
 
-    def put(self, msg_id: int, msg: Any) -> None:
-        """put an object into cache"""
-        buf_idx = msg_id % self.num_buffers
-        self.cache_id[buf_idx] = msg_id
-        self.cache[buf_idx] = msg
+    def _buf_idx(self, msg_id: int) -> int:
+        return msg_id % len(self._cache)
 
-    def push(self, msg_id: int, shm: SHMContext) -> None:
-        """push an object from cache into shm"""
-        if self.num_buffers != shm.num_buffers:
-            raise ValueError("shm has incorrect number of buffers")
+    def __getitem__(self, msg_id: int) -> typing.Any:
+        """
+        Get a cached object by msg_id
 
-        buf_idx = msg_id % self.num_buffers
-        with shm.buffer(buf_idx) as mem:
-            shm_msg_id = MessageMarshal.msg_id(mem)
-            if shm_msg_id != msg_id:
-                with self.get(msg_id) as obj:
-                    MessageMarshal.to_mem(msg_id, obj, mem)
+        :param msg_id: Message ID to retreive from cache
+        :type msg_id: int
+        :raises CacheMiss: If this msg_id does not exist in the cache.
+        """
+        entry = self._cache[self._buf_idx(msg_id)]
+        if entry is None or entry.msg_id != msg_id:
+            raise CacheMiss
+        return entry.object
 
-    @contextmanager
-    def get(
-        self, msg_id: int, shm: Optional[SHMContext] = None
-    ) -> Generator[Any, None, None]:
-        """get object from cache; if not in cache and shm provided -- get from shm"""
+    def keys(self) -> list[int]:
+        """
+        Get a list of current cached msg_ids
+        """
+        return [entry.msg_id for entry in self._cache if entry is not None]
 
-        buf_idx = msg_id % self.num_buffers
-        if self.cache_id[buf_idx] == msg_id:
-            yield self.cache[buf_idx]
+    def put_local(self, obj: typing.Any, msg_id: int) -> None:
+        """
+        Put an object with associated msg_id directly into cache
 
-        else:
-            if shm is None:
-                raise CacheMiss
+        :param obj: Object to put in cache.
+        :type obj: typing.Any
+        :param msg_id: ID associated with this message/object.
+        :type msg_id: int
+        """
+        self._put(
+            CacheEntry(
+                object=obj,
+                msg_id=msg_id,
+                context=None,
+                memory=None,
+            )
+        )
 
-            with shm.buffer(buf_idx, readonly=True) as mem:
-                try:
-                    if MessageMarshal.msg_id(mem) != msg_id:
-                        raise CacheMiss
-                except UninitializedMemory:
-                    raise CacheMiss
+    def put_from_mem(self, mem: memoryview) -> None:
+        """
+        Reconstitute a message in mem and keep it in cache, releasing and
+        overwriting the existing slot in cache.
+        This method passes the lifecycle of the memoryview to the MessageCache
+        and the memoryview will be properly released by the cache with `free`
 
-                with MessageMarshal.obj_from_mem(mem) as obj:
-                    yield obj
+        :param mem: Source memoryview containing serialized object.
+        :type from_mem: memoryview
+        :raises UninitializedMemory: If mem buffer is not properly initialized.
+        """
+        ctx = MessageMarshal.obj_from_mem(mem)
+        self._put(
+            CacheEntry(
+                object=ctx.__enter__(),
+                msg_id=MessageMarshal.msg_id(mem),
+                context=ctx,
+                memory=mem,
+            )
+        )
 
-    def clear(self):
-        self.cache_id = [None] * self.num_buffers
-        self.cache = [None] * self.num_buffers
+    def _put(self, entry: CacheEntry) -> None:
+        buf_idx = self._buf_idx(entry.msg_id)
+        self._release(buf_idx)
+        self._cache[buf_idx] = entry
 
+    def _release(self, buf_idx: int) -> None:
+        entry = self._cache[buf_idx]
+        if entry is not None:
+            mem = entry.memory
+            ctx = entry.context
+            if ctx is not None:
+                ctx.__exit__(None, None, None)
+            del entry
+            self._cache[buf_idx] = None
+            if mem is not None:
+                mem.release()
 
-# FIXME: This should be made thread-safe in the future
-MessageCache: Dict[UUID, Cache] = dict()
+    def release(self, msg_id: int) -> None:
+        """
+        Release memory for the entry associated with msg_id
+
+        :param msg_id: ID for the message to release.
+        :type msg_id: int
+        :raises CacheMiss: If requested msg_id is not in cache.
+        """
+        buf_idx = self._buf_idx(msg_id)
+        entry = self._cache[buf_idx]
+        if entry is None or entry.msg_id != msg_id:
+            raise CacheMiss
+        self._release(buf_idx)
+
+    def clear(self) -> None:
+        """
+        Release all cached objects
+        """
+        for i in range(len(self._cache)):
+            self._release(i)

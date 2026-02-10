@@ -70,6 +70,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/build/
 docs/source/_build
 docs/source/generated
 
@@ -114,6 +115,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+uv.lock
 
 # Spyder project settings
 .spyderproject
@@ -141,3 +143,5 @@ cython_debug/
 
 # JetBrains
 .idea/
+
+*.local.json

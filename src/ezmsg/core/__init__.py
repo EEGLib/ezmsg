@@ -19,11 +19,15 @@ __all__ = [
     "Unit",
     "State",
     "run",
+    "GraphRunner",
+    "GraphRunnerStartError",
     "Complete",
     "NormalTermination",
     "GraphServer",
     "GraphContext",
     "run_command",
+    "Publisher",
+    "Subscriber",
     # All following are deprecated
     "System",
     "run_system",
@@ -37,11 +41,13 @@ from .settings import Settings
 from .collection import Collection, NetworkDefinition
 from .unit import Unit, task, publisher, subscriber, main, timeit, process, thread
 from .stream import InputStream, OutputStream
-from .backend import run
+from .backend import run, GraphRunner, GraphRunnerStartError
 from .backendprocess import Complete, NormalTermination
 from .graphserver import GraphServer
 from .graphcontext import GraphContext
 from .command import run_command
+from .pubclient import Publisher
+from .subclient import Subscriber
 
 # Following imports are deprecated
 from .backend import run_system

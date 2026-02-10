@@ -1,9 +1,8 @@
 import asyncio
+from collections.abc import AsyncGenerator
 
 import ezmsg.core as ez
 from ezmsg.util.debuglog import DebugLog
-
-from typing import AsyncGenerator, Optional
 
 
 # Terminator -- Arnold Schwarzenegger
@@ -66,7 +65,7 @@ class Modulus(ez.Unit):
 
 
 class ListenerState(ez.State):
-    value: Optional[int] = None
+    value: int | None = None
 
 
 class Listener(ez.Unit):
@@ -240,5 +239,5 @@ if __name__ == "__main__":
     ]
 
     for system in test_systems:
-        ez.logger.info(f"Testing { system.__name__ }")
+        ez.logger.info(f"Testing {system.__name__}")
         ez.run(system())

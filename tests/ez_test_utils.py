@@ -1,4 +1,7 @@
 from dataclasses import asdict, dataclass
+from collections.abc import AsyncGenerator
+from contextlib import contextmanager
+
 import json
 import os
 from pathlib import Path
@@ -8,7 +11,8 @@ import typing
 import ezmsg.core as ez
 
 
-def get_test_fn(test_name: typing.Optional[str] = None, extension: str = "txt") -> Path:
+@contextmanager
+def get_test_fn(test_name: str | None = None, extension: str = "txt") -> typing.Generator[Path, None, None]:
     """PYTEST compatible temporary test file creator"""
 
     # Get current test name if we can..
@@ -19,14 +23,20 @@ def get_test_fn(test_name: typing.Optional[str] = None, extension: str = "txt") 
         else:
             test_name = __name__
 
-    file_path = Path(tempfile.gettempdir())
-    file_path = file_path / Path(f"{test_name}.{extension}")
-
-    # Create the file
-    with open(file_path, "w"):
-        pass
-
-    return file_path
+    # Create a unique temporary file name to avoid collisions when running the
+    # full test suite in parallel or when other tests use the same test name.
+    # Use NamedTemporaryFile with delete=False so callers can open/remove it.
+    prefix = f"{test_name}-" if test_name else "test-"
+    tmp = tempfile.NamedTemporaryFile(prefix=prefix, suffix=f".{extension}")
+    tmp.close()  # Close so others can open it on Windows
+    path = Path(tmp.name)
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # MESSAGE DEFINITIONS
@@ -46,7 +56,7 @@ class MessageGenerator(ez.Unit):
     OUTPUT = ez.OutputStream(SimpleMessage)
 
     @ez.publisher(OUTPUT)
-    async def spawn(self) -> typing.AsyncGenerator:
+    async def spawn(self) -> AsyncGenerator:
         for i in range(self.SETTINGS.num_msgs):
             yield self.OUTPUT, SimpleMessage(i)
         raise ez.Complete

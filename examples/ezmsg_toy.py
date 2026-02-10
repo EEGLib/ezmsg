@@ -4,7 +4,7 @@ import math
 
 from dataclasses import dataclass
 
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 import ezmsg.core as ez
 
@@ -65,7 +65,7 @@ class MessageGenerator(ez.Unit):
 
 # DEBUG OUTPUT
 class DebugOutputSettings(ez.Settings):
-    name: Optional[str] = "Default"
+    name: str | None = "Default"
 
 
 class DebugOutput(ez.Unit):
@@ -192,8 +192,8 @@ if __name__ == "__main__":
 
     ez.run(
         SYSTEM=system,
-        # connections = [
-        #     ( system.PING.OUTPUT, 'PING_OUTPUT' ),
-        #     ( 'FOO_SUB', system.FOOSUB.INPUT )
-        # ]
+        connections=[
+            # Make PING.OUTPUT available on a topic ezmsg_attach.py
+            (system.PING.OUTPUT, "GLOBAL_PING_TOPIC"),
+        ],
     )

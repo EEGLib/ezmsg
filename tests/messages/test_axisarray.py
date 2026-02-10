@@ -1,3 +1,4 @@
+import importlib.util
 import pytest
 import numpy as np
 
@@ -10,7 +11,7 @@ from ezmsg.util.messages.axisarray import (
     sliding_win_oneaxis,
 )
 
-from typing import Generator, List
+from collections.abc import Generator
 
 DATA = np.ones((2, 5, 4, 4))
 
@@ -21,7 +22,7 @@ def test_simple() -> None:
 
 @dataclass
 class MultiChannelData(AxisArray):
-    ch_names: List[str] = field(default_factory=list)
+    ch_names: list[str] = field(default_factory=list)
 
 
 def test_axes() -> None:
@@ -65,9 +66,9 @@ def test_concat() -> None:
     batch_size = 10
     num_batches = 5
 
-    batches: List[AxisArray] = list()
+    batches: list[AxisArray] = list()
     for _ in range(num_batches):
-        win: List[AxisArray] = list()
+        win: list[AxisArray] = list()
         for msg, _ in zip(gen, range(batch_size)):
             win.append(msg)
         batches.append(AxisArray.concatenate(*win, dim="time"))
@@ -110,6 +111,45 @@ def test_concat() -> None:
     assert (
         nofilter_batch_cat.shape[nofilter_batch_cat.get_axis_idx("time")] == batch_size
     )
+
+
+def test_concat_with_coordinate_axis():
+    # Create two AxisArray objects with a CoordinateAxis
+    n_a = 2
+    n_b1 = 3
+    aa1 = AxisArray(
+        np.arange(n_a * n_b1).reshape(n_a, n_b1),
+        dims=["a", "b"],
+        axes={"b": AxisArray.CoordinateAxis(data=np.arange(1, 1 + n_b1), dims=["b"])},
+    )
+
+    n_b2 = 4
+    aa2 = AxisArray(
+        np.arange(n_a * n_b1, n_a * (n_b1 + n_b2)).reshape(n_a, n_b2),
+        dims=["a", "b"],
+        axes={
+            "b": AxisArray.CoordinateAxis(
+                data=np.arange(1 + n_b1, 1 + n_b1 + n_b2), dims=["b"]
+            )
+        },
+    )
+
+    # Concatenate along the CoordinateAxis
+    concatenated = AxisArray.concatenate(aa1, aa2, dim="b")
+
+    # Check the shape of the concatenated array
+    assert concatenated.shape == (n_a, n_b1 + n_b2)
+
+    # Check the data of the concatenated CoordinateAxis
+    expected_axis_data = np.arange(1, 1 + n_b1 + n_b2)
+    assert np.array_equal(concatenated.axes["b"].data, expected_axis_data)
+
+    # Check that the other axes are preserved
+    assert "a" in concatenated.dims
+
+    # Check that the concatenated data is correct
+    expected_data = np.hstack((aa1.data, aa2.data))
+    assert np.array_equal(concatenated.data, expected_data)
 
 
 @pytest.mark.parametrize(
@@ -234,17 +274,119 @@ def test_sliding_win_oneaxis(nwin: int, axis: int, step: int):
     assert np.array_equal(res, expected)
     assert np.shares_memory(res, expected)
 
-def xarray_available():
-    try:
-        import xarray
-        return True 
-    except ImportError:
-        return False
 
-@pytest.mark.skipif(not xarray_available(), reason = "Optional dependency 'xarray' not installed")
+import platform
+
+_has_mlx = importlib.util.find_spec("mlx") is not None
+requires_mlx = pytest.mark.skipif(
+    not _has_mlx or platform.machine() != "arm64" or platform.system() != "Darwin",
+    reason="Requires MLX on Apple Silicon",
+)
+
+
+@requires_mlx
+@pytest.mark.parametrize("nwin", [0, 3, 8])
+@pytest.mark.parametrize("axis", [0, 1, 2, -1, 3, -4])
+@pytest.mark.parametrize("step", [1, 2])
+def test_sliding_win_oneaxis_mlx(nwin: int, axis: int, step: int):
+    """Test the strided path using MLX arrays."""
+    import mlx.core as mx
+
+    dims = [4, 5, 6]
+    np_data = np.arange(np.prod(dims)).reshape(dims)
+    mx_data = mx.array(np_data)
+
+    if axis < -len(dims) or axis >= len(dims):
+        with pytest.raises(IndexError):
+            sliding_win_oneaxis(mx_data, nwin, axis, step)
+        return
+
+    if nwin > dims[axis]:
+        with pytest.raises(ValueError):
+            sliding_win_oneaxis(mx_data, nwin, axis, step)
+        return
+
+    res = sliding_win_oneaxis(mx_data, nwin, axis, step)
+
+    if nwin == 0:
+        assert np.asarray(res).size == 0
+        return
+
+    # Compare against the numpy strided result.
+    expected = sliding_win_oneaxis(np_data, nwin, axis, step)
+    np.testing.assert_array_equal(np.asarray(res), expected)
+
+
+@pytest.mark.parametrize("nwin", [0, 3, 8])
+@pytest.mark.parametrize("axis", [0, 1, 2, -1])
+@pytest.mark.parametrize("step", [1, 2])
+def test_sliding_win_oneaxis_generic(nwin: int, axis: int, step: int):
+    """Test the generic (take+reshape) fallback path using numpy arrays."""
+    from ezmsg.util.messages.axisarray import _sliding_win_generic
+
+    dims = [4, 5, 6]
+    data = np.arange(np.prod(dims)).reshape(dims)
+
+    # Normalize axis the same way sliding_win_oneaxis does before calling _generic.
+    norm_axis = axis if axis >= 0 else len(dims) + axis
+
+    if nwin > dims[norm_axis]:
+        with pytest.raises(ValueError):
+            _sliding_win_generic(data, nwin, norm_axis, step, xp=np)
+        return
+
+    res = _sliding_win_generic(data, nwin, norm_axis, step, xp=np)
+
+    if nwin == 0:
+        assert res.size == 0
+        return
+
+    # Compare against the strided numpy result.
+    expected = sliding_win_oneaxis(data, nwin, axis, step)
+    np.testing.assert_array_equal(res, expected)
+
+
+@pytest.mark.benchmark(group="sliding_win")
+@pytest.mark.parametrize(
+    "shape,axis,nwin,step",
+    [
+        ((100, 64), 0, 50, 1),       # (time, channels) — typical EEG window
+        ((1000, 32), 0, 256, 64),     # large time axis with step
+        ((8, 1000, 16), 1, 100, 10),  # middle axis
+    ],
+    ids=["100x64_win50", "1000x32_win256_step64", "8x1000x16_win100_step10"],
+)
+class TestSlidingWinBenchmark:
+    def test_strided(self, benchmark, shape, axis, nwin, step):
+        data = np.random.randn(*shape)
+        benchmark(sliding_win_oneaxis, data, nwin, axis, step)
+
+    def test_generic(self, benchmark, shape, axis, nwin, step):
+        from ezmsg.util.messages.axisarray import _sliding_win_generic
+
+        data = np.random.randn(*shape)
+        norm_axis = axis if axis >= 0 else len(shape) + axis
+        benchmark(_sliding_win_generic, data, nwin, norm_axis, step, xp=np)
+
+    @requires_mlx
+    def test_mlx_strided(self, benchmark, shape, axis, nwin, step):
+        import mlx.core as mx
+
+        data = mx.array(np.random.randn(*shape))
+        benchmark(sliding_win_oneaxis, data, nwin, axis, step)
+
+
+def xarray_available() -> bool:
+    return importlib.util.find_spec("xarray") is not None
+
+
+@pytest.mark.skipif(
+    not xarray_available(), reason="Optional dependency 'xarray' not installed"
+)
 def test_to_xr_dataarray():
-    
-    quality = ((np.arange(np.prod(DATA.shape[-2:])) % 3).reshape(DATA.shape[-2:]) + 1) / 3
+    quality = (
+        (np.arange(np.prod(DATA.shape[-2:])) % 3).reshape(DATA.shape[-2:]) + 1
+    ) / 3
     aa = MultiChannelData(
         DATA,
         dims=["ch", "time", "x", "y"],
@@ -252,17 +394,23 @@ def test_to_xr_dataarray():
             "time": AxisArray.TimeAxis(fs=5.0),
             "x": AxisArray.LinearAxis(unit="mm", gain=0.2, offset=-13.0),
             "y": AxisArray.LinearAxis(unit="mm", gain=0.2, offset=-13.0),
-            "quality": AxisArray.CoordinateAxis(unit = '%', data = quality, dims = ['x', 'y'])
+            "quality": AxisArray.CoordinateAxis(
+                unit="%", data=quality, dims=["x", "y"]
+            ),
         },
         key="spatial_sensor_array_with_sensor_quality_metric",
         ch_names=["a", "b"],
     )
-        
+
     da = aa.to_xr_dataarray()
     assert da.shape == aa.shape
-    assert da.dims == ('ch', 'time', 'x', 'y')
+    assert da.dims == ("ch", "time", "x", "y")
     assert np.allclose(da.time.data, np.array([0.0, 0.2, 0.4, 0.6, 0.8]))
 
-    quality_data = da.where(da.quality == 1.0).stack(pixel = ['x', 'y']).dropna('pixel')
-    assert np.allclose(quality_data.x.data, np.array([-13.0, -12.8, -12.6, -12.6, -12.4]))
-    assert np.allclose(quality_data.y.data, np.array([-12.6, -12.8, -13.0, -12.4, -12.6]))
+    quality_data = da.where(da.quality == 1.0).stack(pixel=["x", "y"]).dropna("pixel")
+    assert np.allclose(
+        quality_data.x.data, np.array([-13.0, -12.8, -12.6, -12.6, -12.4])
+    )
+    assert np.allclose(
+        quality_data.y.data, np.array([-12.6, -12.8, -13.0, -12.4, -12.6])
+    )

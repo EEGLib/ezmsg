@@ -1,13 +1,15 @@
 import asyncio
-import logging
-import typing
+from collections.abc import Callable, Mapping, Iterable
+from collections.abc import Collection as AbstractCollection
 import enum
-
-from socket import socket
+import logging
+import os
+from threading import BrokenBarrierError
 from multiprocessing import Event, Barrier
 from multiprocessing.synchronize import Event as EventType
 from multiprocessing.synchronize import Barrier as BarrierType
 from multiprocessing.connection import wait, Connection
+from socket import socket
 
 from .netprotocol import DEFAULT_SHM_SIZE, AddressType
 
@@ -17,7 +19,6 @@ from .stream import Stream
 from .unit import Unit, PROCESS_ATTR
 
 from .graphserver import GraphService
-from .shmserver import SHMService
 from .graphcontext import GraphContext
 from .backendprocess import (
     BackendProcess,
@@ -31,53 +32,67 @@ logger = logging.getLogger("ezmsg")
 
 
 class ExecutionContext:
-    processes: typing.List[BackendProcess]
+    _process_units: list[list[Unit]]
+    _processes: list[BackendProcess] | None
+
     term_ev: EventType
     start_barrier: BarrierType
-    connections: typing.List[typing.Tuple[str, str]]
+    connections: list[tuple[str, str]]
 
     def __init__(
         self,
-        processes: typing.List[typing.List[Unit]],
-        graph_service: GraphService,
-        shm_service: SHMService,
-        connections: typing.List[typing.Tuple[str, str]] = [],
-        backend_process: typing.Type[BackendProcess] = DefaultBackendProcess,
+        process_units: list[list[Unit]],
+        connections: list[tuple[str, str]] = [],
+        start_participant: bool = False,
     ) -> None:
-        if not processes:
-            raise ValueError("Cannot create an execution context for zero processes")
-
         self.connections = connections
+        self._process_units = process_units
+        self._processes = None
 
         self.term_ev = Event()
-        self.start_barrier = Barrier(len(processes))
-        self.stop_barrier = Barrier(len(processes))
+        self.start_barrier = Barrier(
+            len(process_units) + (1 if start_participant else 0)
+        )
+        self.stop_barrier = Barrier(len(process_units))
 
-        self.processes = [
+    def create_processes(
+        self,
+        graph_address: AddressType | None,
+        backend_process: type[BackendProcess] = DefaultBackendProcess,
+    ) -> None:
+        self._processes = [
             backend_process(
                 process_units,
                 self.term_ev,
                 self.start_barrier,
                 self.stop_barrier,
-                graph_service,
-                shm_service,
+                graph_address,
             )
-            for process_units in processes
+            for process_units in self._process_units
         ]
+
+    @property
+    def processes(self) -> list[BackendProcess]:
+        if self._processes is None:
+            raise ValueError("ExecutionContext has not initialized processes")
+        else:
+            return self._processes
+
+    @property
+    def process_count(self) -> int:
+        return len(self._process_units)
 
     @classmethod
     def setup(
         cls,
-        components: typing.Mapping[str, Component],
-        graph_service: GraphService,
-        shm_service: SHMService,
-        root_name: typing.Optional[str] = None,
-        connections: typing.Optional[NetworkDefinition] = None,
-        process_components: typing.Optional[typing.Collection[Component]] = None,
-        backend_process: typing.Type[BackendProcess] = DefaultBackendProcess,
+        components: Mapping[str, Component],
+        root_name: str | None = None,
+        connections: NetworkDefinition | None = None,
+        process_components: AbstractCollection[Component] | None = None,
         force_single_process: bool = False,
-    ) -> typing.Optional["ExecutionContext"]:
-        graph_connections: typing.List[typing.Tuple[str, str]] = []
+        start_participant: bool = False,
+    ) -> "ExecutionContext | None":
+        graph_connections: list[tuple[str, str]] = []
 
         for name, component in components.items():
             component._set_name(name)
@@ -96,9 +111,9 @@ class ExecutionContext:
                 graph_connections.append((from_topic, to_topic))
 
         def crawl_components(
-            component: Component, callback: typing.Callable[[Component], None]
+            component: Component, callback: Callable[[Component], None]
         ) -> None:
-            search: typing.List[Component] = [component]
+            search: list[Component] = [component]
             while len(search):
                 comp = search.pop()
                 search += list(comp.components.values())
@@ -135,156 +150,383 @@ class ExecutionContext:
         if force_single_process:
             processes = [[u for pu in processes for u in pu]]
 
-        try:
-            return cls(
-                processes,
-                graph_service,
-                shm_service,
-                graph_connections,
-                backend_process,
-            )
-        except ValueError:
+        if not processes:
             return None
 
-
-def run_system(
-    system: Collection,
-    num_buffers: int = 32,
-    init_buf_size: int = DEFAULT_SHM_SIZE,
-    backend_process: typing.Type[BackendProcess] = DefaultBackendProcess,
-) -> None:
-    """Deprecated; just use run any component (unit, collection)"""
-    run(SYSTEM=system, backend_process=backend_process)
-
-
-def run(
-    components: typing.Optional[typing.Mapping[str, Component]] = None,
-    root_name: typing.Optional[str] = None,
-    connections: typing.Optional[NetworkDefinition] = None,
-    process_components: typing.Optional[typing.Collection[Component]] = None,
-    backend_process: typing.Type[BackendProcess] = DefaultBackendProcess,
-    graph_address: typing.Optional[AddressType] = None,
-    force_single_process: bool = False,
-    **components_kwargs: Component,
-) -> None:
-    """
-    Begin execution of a set of :obj:`Component` s.
-
-    `The old method` :obj:`run_system` `has been deprecated and uses` ``run()`` `instead.`
-
-    Args:
-        components: represents the nodes in the directed acyclic graph. It is a dictionary which contains the
-            ``Components`` to be run mapped to string names. On initialization, ``ezmsg`` will call ``initialize()``
-            for each :obj:`Unit` and ``configure()`` for each :obj:`Collection`, if defined.
-        root_name:
-        connections: represents the edges is a ``NetworkDefinition`` which connects
-            ``OutputStreams`` to ``InputStreams``. On initialization, ``ezmsg`` will create a directed acyclic graph
-            using the contents of this parameter.
-        process_components: a list of ``Components`` which should live in their own process.
-        backend_process: is currently under development.
-        graph_address: the hostname and port of the graph server which ``ezmsg`` should connect to.
-            If not defined, ``ezmsg`` will start a new graph server at 127.0.0.1:25978.
-        force_single_process: run all ``Components`` in one process.
-            This is necessary when running ``ezmsg`` in a notebook.
-        components_kwargs:
-    """
-    # FIXME: This function is the last major re-implementation needed to make this
-    # codebase more maintainable.
-    graph_service = GraphService(graph_address)
-    shm_service = SHMService()
-
-    if components is not None and isinstance(components, Component):
-        components = {"SYSTEM": components}
-        logger.warning(
-            "Passing a single Component without naming the Component is now Deprecated."
-        )
-    components = either_dict_or_kwargs(components, components_kwargs, "run")
-    if components is None:
-        raise ValueError("Must supply at least one component to run")
-
-    with new_threaded_event_loop() as loop:
-        execution_context = ExecutionContext.setup(
-            components,
-            graph_service,
-            shm_service,
-            root_name,
-            connections,
-            process_components,
-            backend_process,
-            force_single_process,
+        return cls(
+            processes,
+            graph_connections,
+            start_participant,
         )
 
-        if execution_context is None:
+
+class GraphRunnerStartError(RuntimeError):
+    pass
+
+
+class GraphRunner:
+    _components: Mapping[str, Component]
+    _execution_context: ExecutionContext | None
+    _graph_context: GraphContext | None
+    _loop: asyncio.AbstractEventLoop | None
+    _loop_cm: object | None
+    _main_process: BackendProcess | None
+    _spawned_processes: list[BackendProcess]
+    _start_participant: bool
+    _cleanup_done: bool
+    _graph_server_spawned: bool
+    _started: bool
+    _stopped: bool
+
+    def __init__(
+        self,
+        components: Mapping[str, Component] | None = None,
+        root_name: str | None = None,
+        connections: NetworkDefinition | None = None,
+        process_components: AbstractCollection[Component] | None = None,
+        backend_process: type[BackendProcess] = DefaultBackendProcess,
+        graph_address: AddressType | None = None,
+        force_single_process: bool = False,
+        profiler_log_name: str | None = None,
+        **components_kwargs: Component,
+    ) -> None:
+            
+        components = either_dict_or_kwargs(components, components_kwargs, "GraphRunner")
+        if components is None:
+            raise ValueError("Must supply at least one component to run")
+
+        self._components = components
+        self._root_name = root_name
+        self._connections = connections
+        self._process_components = process_components
+        self._backend_process = backend_process
+        self._graph_address = graph_address
+        self._force_single_process = force_single_process
+        self._profiler_log_name = profiler_log_name
+
+        self._execution_context = None
+        self._graph_context = None
+        self._loop = None
+        self._loop_cm = None
+        self._main_process = None
+        self._spawned_processes = []
+        self._start_participant = False
+        self._cleanup_done = False
+        self._graph_server_spawned = False
+        self._started = False
+        self._stopped = False
+
+    @property
+    def graph_address(self) -> AddressType | None:
+        if self._graph_context is not None:
+            return self._graph_context.graph_address
+        return self._graph_address
+
+    @property
+    def graph_server_spawned(self) -> bool:
+        return self._graph_server_spawned
+
+    @property
+    def connections(self) -> list[tuple[str, str]]:
+        if self._execution_context is None:
+            return []
+        return list(self._execution_context.connections)
+
+    @property
+    def processes(self) -> list[BackendProcess]:
+        if self._execution_context is None:
+            raise ValueError("GraphRunner has not initialized processes")
+        return self._execution_context.processes
+
+    @property
+    def running(self) -> bool:
+        return self._started
+
+    def start(self) -> None:
+        if self._started:
+            raise RuntimeError("GraphRunner is already running")
+        if self._stopped:
+            raise RuntimeError("GraphRunner cannot be restarted")
+        if self._force_single_process:
+            raise ValueError("force_single_process is only supported with run_blocking")
+        if not self._initialize(force_single_process=False, wait_for_ready=True):
             return
 
-        # FIXME: When done this way, we don't exit the graph_context on exception
-        async def create_graph_context() -> GraphContext:
-            return await GraphContext(graph_service, shm_service).__aenter__()
+        self._start_processes(self.processes)
 
-        # FIXME: This sort of stuff should all be done in a separate async function...
-        # Done this way, its ugly as hell and opens us up to a lot of issues with
-        # entering and exiting context properly on exceptions.
-        graph_context = asyncio.run_coroutine_threadsafe(
-            create_graph_context(), loop
-        ).result()
+        if self._start_participant and self._execution_context is not None:
+            try:
+                self._execution_context.start_barrier.wait()
+            except BrokenBarrierError as err:
+                self._execution_context.term_ev.set()
+                self._join_spawned_processes()
+                self._cleanup()
+                self._stopped = True
+                raise GraphRunnerStartError(
+                    "GraphRunner failed to start. One or more processes exited before "
+                    "reaching the start barrier; check logs for earlier exceptions."
+                ) from err
+        self._started = True
+        if self._stopped:
+            self._started = False
 
-        async def cleanup_graph() -> None:
-            await graph_context.__aexit__(None, None, None)
+    def stop(self) -> None:
+        if not self._started:
+            raise RuntimeError("GraphRunner is not running")
+        if self._execution_context is None:
+            raise RuntimeError("GraphRunner execution context is invalid!")
+        self._execution_context.term_ev.set()
+        self._join_spawned_processes()
+        self._cleanup()
+        self._started = False
+        self._stopped = True
 
-        async def setup_graph() -> None:
-            for edge in execution_context.connections:
-                await graph_context.connect(*edge)
+    def run_blocking(self) -> None:
+        if self._started:
+            raise RuntimeError("GraphRunner is already running")
+        if self._stopped:
+            raise RuntimeError("GraphRunner cannot be restarted")
+        if not self._initialize(
+            force_single_process=self._force_single_process, wait_for_ready=False
+        ):
+            return
+        self._started = True
+        self._run_main_process()
 
-        asyncio.run_coroutine_threadsafe(setup_graph(), loop).result()
+    def _initialize(self, force_single_process: bool, wait_for_ready: bool) -> bool:
+        os.environ["EZMSG_PROFILER"] = self._profiler_log_name or "ezprofiler.log"
+        self._cleanup_done = False
+        self._spawned_processes = []
+        self._start_participant = wait_for_ready
 
-        if len(execution_context.processes) > 1:
-            logger.info(f"Running in {len(execution_context.processes)} processes.")
+        self._execution_context = ExecutionContext.setup(
+            self._components,
+            self._root_name,
+            self._connections,
+            self._process_components,
+            force_single_process,
+            wait_for_ready,
+        )
 
-        main_process = execution_context.processes[0]
-        other_processes = execution_context.processes[1:]
+        if self._execution_context is None:
+            return False
 
-        sentinels: typing.Set[typing.Union[Connection, socket, int]] = set()
-
-        for proc in other_processes:
-            proc.start()
-            sentinels.add(proc.sentinel)
-
-        def join_all_other_processes():
-            while len(sentinels):
-                done = wait(sentinels, timeout=0.1)
-                for sentinel in done:
-                    sentinels.discard(sentinel)
+        self._loop_cm = new_threaded_event_loop()
+        self._loop = self._loop_cm.__enter__()
 
         try:
-            main_process.process(loop)
-            join_all_other_processes()
+
+            async def create_graph_context() -> GraphContext:
+                return await GraphContext(self._graph_address).__aenter__()
+
+            graph_context = asyncio.run_coroutine_threadsafe(
+                create_graph_context(), self._loop
+            ).result()
+            self._graph_context = graph_context
+            self._graph_server_spawned = graph_context._graph_server is not None
+
+            if graph_context._graph_server is None:
+                address = graph_context.graph_address
+                if address is None:
+                    address = GraphService.default_address()
+                logger.info(f"Connected to GraphServer @ {address}")
+            else:
+                logger.info(f"Spawned GraphServer @ {graph_context.graph_address}")
+
+            self._execution_context.create_processes(
+                graph_address=graph_context.graph_address,
+                backend_process=self._backend_process,
+            )
+
+            async def setup_graph() -> None:
+                for edge in self._execution_context.connections:
+                    await graph_context.connect(*edge)
+
+            asyncio.run_coroutine_threadsafe(setup_graph(), self._loop).result()
+
+            if len(self._execution_context.processes) > 1:
+                logger.info(
+                    f"Running in {len(self._execution_context.processes)} processes."
+                )
+
+        except Exception:
+            self._cleanup()
+            raise
+
+        return True
+
+    def _start_processes(self, processes: list[BackendProcess]) -> None:
+        for proc in processes:
+            proc.start()
+            self._spawned_processes.append(proc)
+
+    def _join_spawned_processes(self) -> None:
+        sentinels: dict[Connection | socket | int, BackendProcess] = {
+            proc.sentinel: proc for proc in self._spawned_processes
+        }
+
+        # Poll sentinels so KeyboardInterrupt remains responsive (notably on Windows)
+        while len(sentinels):
+            done = wait(list(sentinels.keys()), timeout=0.1)
+
+            for sentinel in done:
+                proc = sentinels.pop(sentinel, None)
+                if proc is not None:
+                    proc.join()
+
+    def _run_main_process(self) -> None:
+        if self._execution_context is None or self._loop is None:
+            return
+        self._main_process = self._execution_context.processes[0]
+        self._start_processes(self._execution_context.processes[1:])
+
+        try:
+            self._main_process.process(self._loop)
+            self._join_spawned_processes()
             logger.info("All processes exited normally")
 
         except KeyboardInterrupt:
             logger.info(
                 "Attempting graceful shutdown, interrupt again to force quit..."
             )
-            execution_context.term_ev.set()
+            self._execution_context.term_ev.set()
 
             try:
-                join_all_other_processes()
+                self._join_spawned_processes()
 
             except KeyboardInterrupt:
                 logger.warning("Interrupt intercepted, force quitting")
-                execution_context.start_barrier.abort()
-                execution_context.stop_barrier.abort()
-                for proc in other_processes:
+                self._execution_context.start_barrier.abort()
+                self._execution_context.stop_barrier.abort()
+                for proc in self._spawned_processes:
                     proc.terminate()
 
         finally:
-            join_all_other_processes()
-            asyncio.run_coroutine_threadsafe(cleanup_graph(), loop).result()
+            self._join_spawned_processes()
+            self._cleanup()
+            self._started = False
+            self._stopped = True
+
+    def _cleanup(self) -> None:
+        if self._cleanup_done:
+            return
+        self._cleanup_done = True
+
+        if self._graph_context is not None and self._loop is not None:
+
+            async def cleanup_graph() -> None:
+                await self._graph_context.__aexit__(None, None, None)
+
+            asyncio.run_coroutine_threadsafe(cleanup_graph(), self._loop).result()
+
+        if self._loop_cm is not None:
+            self._loop_cm.__exit__(None, None, None)
+
+        self._loop_cm = None
+        self._loop = None
+        self._graph_context = None
+        self._spawned_processes = []
+        self._start_participant = False
+
+
+def run_system(
+    system: Collection,
+    num_buffers: int = 32,
+    init_buf_size: int = DEFAULT_SHM_SIZE,
+    backend_process: type[BackendProcess] = DefaultBackendProcess,
+) -> None:
+    """
+    Deprecated function for running a system (Collection).
+
+    .. deprecated::
+       Use :func:`run` instead to run any component (unit, collection).
+
+    :param system: The collection to run
+    :type system: Collection
+    :param num_buffers: Number of message buffers (deprecated parameter)
+    :type num_buffers: int
+    :param init_buf_size: Initial buffer size (deprecated parameter)
+    :type init_buf_size: int
+    :param backend_process: Backend process class to use
+    :type backend_process: type[BackendProcess]
+    """
+    run(SYSTEM=system, backend_process=backend_process)
+
+
+def run(
+    components: Mapping[str, Component] | None = None,
+    root_name: str | None = None,
+    connections: NetworkDefinition | None = None,
+    process_components: AbstractCollection[Component] | None = None,
+    backend_process: type[BackendProcess] = DefaultBackendProcess,
+    graph_address: AddressType | None = None,
+    force_single_process: bool = False,
+    profiler_log_name: str | None = None,
+    **components_kwargs: Component,
+) -> None:
+    """
+    Begin execution of a set of Components.
+
+    This is the main entry point for running ezmsg applications. It sets up the
+    execution environment, initializes components, and manages the message-passing
+    infrastructure.
+
+    On initialization, ezmsg will call ``initialize()`` for each :obj:`Unit` and
+    ``configure()`` for each :obj:`Collection`, if defined. On initialization, ezmsg
+    will create a directed acyclic graph using the contents of ``connections``.
+
+    :param components: Dictionary mapping component names to Component objects. The components
+        are the nodes in the ezmsg (directed acyclic) graph.
+    :type components: collections.abc.Mapping[str, Component] | None
+    :param root_name: Optional root name for the component hierarchy
+    :type root_name: str | None
+    :param connections: Network definition specifying stream connections between components. These
+        are the edges in the ezmsg graph, connecting OutputStreams to InputStreams.
+    :type connections: NetworkDefinition | None
+    :param process_components: Collection of components that should run in separate processes
+    :type process_components: collections.abc.Collection[Component] | None
+    :param backend_process: Backend process class to use for execution. Currently under development.
+    :type backend_process: type[BackendProcess]
+    :param graph_address: Address (hostname and port) of graph server which ezmsg should connect to.
+        If not defined, ezmsg will start a new graph server at 127.0.0.1:25978.
+    :type graph_address: AddressType | None
+    :param force_single_process: Whether to force all components into a single process
+    :type force_single_process: bool
+    :param components_kwargs: Additional components specified as keyword arguments
+    :type components_kwargs: Component
+
+    .. note::
+       Since jupyter notebooks run in a single process, you must set `force_single_process=True`.
+
+    .. note::
+       The old method :obj:`run_system` has been deprecated and uses ``run()`` instead.
+    """
+    if components is not None and isinstance(components, Component):
+        components = {"SYSTEM": components}
+        logger.warning(
+            "Passing a single Component without naming the Component is now Deprecated."
+        )
+        
+    components = either_dict_or_kwargs(components, components_kwargs, "run")
+    
+    runner = GraphRunner(
+        components=components,
+        root_name=root_name,
+        connections=connections,
+        process_components=process_components,
+        backend_process=backend_process,
+        graph_address=graph_address,
+        force_single_process=force_single_process,
+        profiler_log_name=profiler_log_name,
+    )
+    
+    runner.run_blocking()
 
 
 def collect_processes(
-    collection: typing.Union[Collection, typing.Iterable[Component]],
-    process_components: typing.Optional[typing.Collection[Component]] = None,
-) -> typing.List[typing.List[Unit]]:
+    collection: Collection | Iterable[Component],
+    process_components: AbstractCollection[Component] | None = None,
+) -> list[list[Unit]]:
     if isinstance(collection, Collection):
         process_units, units = _collect_processes(
             collection._components.values(), collection.process_components()
@@ -303,10 +545,10 @@ def collect_processes(
 
 
 def _collect_processes(
-    comps: typing.Iterable[Component], process_components: typing.Collection[Component]
-) -> typing.Tuple[typing.List[typing.List[Unit]], typing.List[Unit]]:
-    process_units: typing.List[typing.List[Unit]] = []
-    units: typing.List[Unit] = []
+    comps: Iterable[Component], process_components: AbstractCollection[Component]
+) -> tuple[list[list[Unit]], list[Unit]]:
+    process_units: list[list[Unit]] = []
+    units: list[Unit] = []
 
     for comp in comps:
         if isinstance(comp, Collection):
