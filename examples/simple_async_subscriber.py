@@ -14,7 +14,7 @@ async def main(host: str = "127.0.0.1", port: int = 12345) -> None:
             while True:
                 async with sub.recv_zero_copy() as msg:
                     # Uncomment if you want to witness backpressure!
-                    # await asyncio.sleep(0.15)
+                    # await asyncio.sleep(1.0)
                     print(msg)
         except asyncio.CancelledError:
             pass
