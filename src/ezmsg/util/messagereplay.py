@@ -31,7 +31,7 @@ class ReplayStatusMessage:
     done: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class FileReplayMessage:
     """
     Add a file to the queue.
