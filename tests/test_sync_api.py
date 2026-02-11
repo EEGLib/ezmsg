@@ -20,7 +20,7 @@ def test_sync_autostart_and_spin_once_no_messages():
     host = "127.0.0.1"
     port = _free_port()
 
-    with ez.init((host, port), auto_start=True) as ctx:
+    with ez.sync.init((host, port), auto_start=True) as ctx:
         ctx.create_subscription("/TEST", callback=lambda _: None)
         assert ctx.spin_once(timeout=0.01) is False
 
@@ -29,7 +29,7 @@ def test_sync_backpressure_blocks_publish():
     host = "127.0.0.1"
     port = _free_port()
 
-    with ez.init((host, port), auto_start=True) as ctx:
+    with ez.sync.init((host, port), auto_start=True) as ctx:
         received = []
         done = threading.Event()
 

@@ -5,7 +5,7 @@ TOPIC = "/TEST"
 
 
 def main(host: str = "127.0.0.1", port: int = 12345) -> None:
-    with ez.init((host, port), auto_start=True) as ctx:
+    with ez.sync.init((host, port), auto_start=True) as ctx:
         print("Subscriber Task Launched")
 
         def on_message(msg: str) -> None:
@@ -14,7 +14,7 @@ def main(host: str = "127.0.0.1", port: int = 12345) -> None:
             print(msg)
 
         ctx.create_subscription(TOPIC, callback=on_message)
-        ez.spin(ctx)
+        ez.sync.spin(ctx)
 
     print("Subscriber Task Concluded")
 

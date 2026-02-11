@@ -5,7 +5,7 @@ import ezmsg.core as ez
 TOPIC = "/TEST"
 
 def main(host: str = "127.0.0.1", port: int = 12345) -> None:
-    with ez.init((host, port), auto_start=True) as ctx:
+    with ez.sync.init((host, port), auto_start=True) as ctx:
         pub = ctx.create_publisher(TOPIC, force_tcp=True)
 
         print("Publisher Task Launched")
