@@ -32,7 +32,7 @@ class DebugLog(ez.Unit):
     OUTPUT = ez.OutputStream(Any)
     """Send messages back out to continue through the graph."""
 
-    @ez.subscriber(INPUT, zero_copy=True)
+    @ez.subscriber(INPUT)
     @ez.publisher(OUTPUT)
     async def log(self, msg: Any) -> AsyncGenerator:
         logstr = f"{self.SETTINGS.name} - {msg=}"
