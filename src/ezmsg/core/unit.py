@@ -198,7 +198,9 @@ def subscriber(stream: InputStream, zero_copy: Any = _ZERO_COPY_SENTINEL):
     if zero_copy is not _ZERO_COPY_SENTINEL:
         warnings.warn(
             "The `zero_copy` argument to @subscriber is deprecated and ignored. "
-            "Subscribers always receive zero-copy messages, so remove `zero_copy=True`.",
+            "Zero-copy behavior is now determined by the InputStream's `leaky` property "
+            "(non-leaky subscribers use zero-copy; leaky subscribers receive deep-copied "
+            "messages). Remove any explicit `zero_copy=...` usage.",
             DeprecationWarning,
             stacklevel=2,
         )
