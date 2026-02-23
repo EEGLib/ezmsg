@@ -290,7 +290,11 @@ class Subscriber:
         :return: Context manager yielding the received message.
         :rtype: collections.abc.AsyncGenerator[typing.Any, None]
         """
-        pub_id, msg_id = await self._incoming.get()
+        while True:
+            pub_id, msg_id = await self._incoming.get()
+            if pub_id in self._channels:
+                break
+            # Stale notification from an unregistered publisher — skip.
 
         with self._channels[pub_id].get(msg_id, self.id) as msg:
             yield msg
