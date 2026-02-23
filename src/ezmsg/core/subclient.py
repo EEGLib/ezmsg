@@ -128,7 +128,6 @@ class Subscriber:
         self.leaky = leaky
         self._graph_address = graph_address
 
-        self._cur_pubs = set()
         self._channels = dict()
         if self.leaky:
             self._incoming = LeakyQueue(
@@ -223,8 +222,10 @@ class Subscriber:
                     pub_ids = (
                         set([UUID(id) for id in update.split(",")]) if update else set()
                     )
+                    cur_pubs = set(self._channels.keys())
 
-                    for pub_id in set(pub_ids - self._cur_pubs):
+                    # Register new channels
+                    for pub_id in set(pub_ids - cur_pubs):
                         channel = await CHANNELS.register(
                             pub_id, self.id, self._incoming, self._graph_address
                         )
@@ -239,7 +240,8 @@ class Subscriber:
 
                         self._channels[pub_id] = channel
 
-                    for pub_id in set(self._cur_pubs - pub_ids):
+                    # Unregister expired channels
+                    for pub_id in set(cur_pubs - pub_ids):
                         await CHANNELS.unregister(pub_id, self.id, self._graph_address)
                         del self._channels[pub_id]
 
