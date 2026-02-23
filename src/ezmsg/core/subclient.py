@@ -39,7 +39,6 @@ class Subscriber:
 
     _graph_address: AddressType | None
     _graph_task: asyncio.Task[None]
-    _cur_pubs: set[UUID]
     _incoming: NotificationQueue
 
     # FIXME: This event allows Subscriber.create to block until
