@@ -490,6 +490,26 @@ def new_threaded_event_loop(
             logger.debug("Waiting at event...")
             # ev.wait()
         logger.debug("Stopping and closing task thread")
+
+        # Cancel and await remaining tasks before stopping the loop
+        async def _cancel_remaining():
+            tasks = [
+                t
+                for t in asyncio.all_tasks()
+                if t is not asyncio.current_task() and not t.done()
+            ]
+            for t in tasks:
+                t.cancel()
+            if tasks:
+                await asyncio.wait(tasks, timeout=5.0)
+
+        try:
+            asyncio.run_coroutine_threadsafe(
+                _cancel_remaining(), loop
+            ).result(timeout=10.0)
+        except Exception:
+            pass
+
         loop.call_soon_threadsafe(loop.stop)
         thread.join()
         loop.close()
