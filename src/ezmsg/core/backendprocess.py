@@ -19,7 +19,7 @@ from concurrent.futures import TimeoutError
 from typing import Any
 
 from .stream import Stream, InputStream, OutputStream
-from .unit import Unit, TIMEIT_ATTR, SUBSCRIBES_ATTR, ZERO_COPY_ATTR
+from .unit import Unit, TIMEIT_ATTR, SUBSCRIBES_ATTR
 from .messagechannel import LeakyQueue
 
 from .graphcontext import GraphContext
@@ -374,8 +374,6 @@ class DefaultBackendProcess(BackendProcess):
                 result = call_fn(msg)
                 if inspect.isasyncgen(result):
                     async for stream, obj in result:
-                        if obj and getattr(task, ZERO_COPY_ATTR, False) and obj is msg:
-                            obj = deepcopy(obj)
                         await pub_fn(stream, obj)
 
                 elif asyncio.iscoroutine(result):

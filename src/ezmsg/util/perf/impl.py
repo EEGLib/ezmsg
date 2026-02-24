@@ -130,7 +130,7 @@ class LoadTestRelay(ez.Unit):
     INPUT = ez.InputStream(LoadTestSample)
     OUTPUT = ez.OutputStream(LoadTestSample)
 
-    @ez.subscriber(INPUT, zero_copy=True)
+    @ez.subscriber(INPUT)
     @ez.publisher(OUTPUT)
     async def on_msg(self, msg: LoadTestSample) -> typing.AsyncGenerator:
         yield self.OUTPUT, msg
@@ -152,7 +152,7 @@ class LoadTestReceiver(ez.Unit):
     async def initialize(self) -> None:
         ez.logger.info(f"Load test subscriber started. (PID: {os.getpid()})")
 
-    @ez.subscriber(INPUT, zero_copy=True)
+    @ez.subscriber(INPUT)
     async def receive(self, sample: LoadTestSample) -> None:
         counter = self.STATE.counters.get(sample.key, -1)
         if sample.counter != counter + 1:
@@ -166,7 +166,7 @@ class LoadTestReceiver(ez.Unit):
 class LoadTestSink(LoadTestReceiver):
     INPUT = ez.InputStream(LoadTestSample)
 
-    @ez.subscriber(INPUT, zero_copy=True)
+    @ez.subscriber(INPUT)
     async def receive(self, sample: LoadTestSample) -> None:
         await super().receive(sample)
         if len(self.STATE.received_data) == self.SETTINGS.num_msgs:

@@ -83,7 +83,7 @@ class SetKey(ez.Unit):
         self.apply_settings(msg)
         self.construct_generator()
 
-    @ez.subscriber(INPUT_SIGNAL, zero_copy=True)
+    @ez.subscriber(INPUT_SIGNAL)
     @ez.publisher(OUTPUT_SIGNAL)
     async def on_message(self, message: AxisArray) -> AsyncGenerator:
         """
@@ -125,7 +125,7 @@ class FilterOnKey(ez.Unit):
     INPUT_SIGNAL = ez.InputStream(AxisArray)
     OUTPUT_SIGNAL = ez.OutputStream(AxisArray)
 
-    @ez.subscriber(INPUT_SIGNAL, zero_copy=True)
+    @ez.subscriber(INPUT_SIGNAL)
     @ez.publisher(OUTPUT_SIGNAL)
     async def on_message(self, message: AxisArray) -> AsyncGenerator:
         """
