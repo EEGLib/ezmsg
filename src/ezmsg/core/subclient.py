@@ -39,7 +39,6 @@ class Subscriber:
 
     _graph_address: AddressType | None
     _graph_task: asyncio.Task[None]
-    _cur_pubs: set[UUID]
     _incoming: NotificationQueue
 
     # FIXME: This event allows Subscriber.create to block until
@@ -128,7 +127,6 @@ class Subscriber:
         self.leaky = leaky
         self._graph_address = graph_address
 
-        self._cur_pubs = set()
         self._channels = dict()
         if self.leaky:
             self._incoming = LeakyQueue(
@@ -223,8 +221,10 @@ class Subscriber:
                     pub_ids = (
                         set([UUID(id) for id in update.split(",")]) if update else set()
                     )
+                    cur_pubs = set(self._channels.keys())
 
-                    for pub_id in set(pub_ids - self._cur_pubs):
+                    # Register new channels
+                    for pub_id in set(pub_ids - cur_pubs):
                         channel = await CHANNELS.register(
                             pub_id, self.id, self._incoming, self._graph_address
                         )
@@ -239,7 +239,8 @@ class Subscriber:
 
                         self._channels[pub_id] = channel
 
-                    for pub_id in set(self._cur_pubs - pub_ids):
+                    # Unregister expired channels
+                    for pub_id in set(cur_pubs - pub_ids):
                         await CHANNELS.unregister(pub_id, self.id, self._graph_address)
                         del self._channels[pub_id]
 
@@ -288,7 +289,11 @@ class Subscriber:
         :return: Context manager yielding the received message.
         :rtype: collections.abc.AsyncGenerator[typing.Any, None]
         """
-        pub_id, msg_id = await self._incoming.get()
+        while True:
+            pub_id, msg_id = await self._incoming.get()
+            if pub_id in self._channels:
+                break
+            # Stale notification from an unregistered publisher — skip.
 
         with self._channels[pub_id].get(msg_id, self.id) as msg:
             yield msg
