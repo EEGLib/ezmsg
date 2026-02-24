@@ -309,12 +309,24 @@ class DefaultBackendProcess(BackendProcess):
                     else:
                         unit.shutdown()  # type: ignore
 
-            asyncio.run_coroutine_threadsafe(shutdown_units(), loop=loop).result()
+            shutdown_future = asyncio.run_coroutine_threadsafe(shutdown_units(), loop=loop)
+            while True:
+                try:
+                    shutdown_future.result()
+                    break
+                except KeyboardInterrupt:
+                    ...
 
             # for cache in MessageCache.values():
             #     cache.clear()
 
-            asyncio.run_coroutine_threadsafe(context.revert(), loop=loop).result()
+            revert_future = asyncio.run_coroutine_threadsafe(context.revert(), loop=loop)
+            while True:
+                try:
+                    revert_future.result()
+                    break
+                except KeyboardInterrupt:
+                    ...
 
             logger.debug(f"Remaining tasks in event loop = {asyncio.all_tasks(loop)}")
 
