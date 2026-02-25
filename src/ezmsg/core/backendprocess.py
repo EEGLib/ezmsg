@@ -311,7 +311,7 @@ class DefaultBackendProcess(BackendProcess):
 
             shutdown_future = asyncio.run_coroutine_threadsafe(shutdown_units(), loop=loop)
             try:
-                shutdown_future.result(timeout=10.0)
+                shutdown_future.result(timeout=5.0)
             except KeyboardInterrupt:
                 shutdown_future.result()
             except TimeoutError:
@@ -322,7 +322,7 @@ class DefaultBackendProcess(BackendProcess):
 
             revert_future = asyncio.run_coroutine_threadsafe(context.revert(), loop=loop)
             try:
-                revert_future.result(timeout=10.0)
+                revert_future.result(timeout=5.0)
             except KeyboardInterrupt:
                 revert_future.result()
             except TimeoutError:
