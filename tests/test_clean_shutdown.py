@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = Path(__file__).with_name("shutdown_runner.py")
@@ -189,14 +191,12 @@ def test_shutdown_exception_on_cancel():
 def test_shutdown_ignore_cancel():
     _run_shutdown_case("ignore_cancel", signals=2)
 
-
-def test_examples_complete_without_sigint():
-    for method in _available_start_methods():
-        _run_example_case("complete", start_method=method)
-        _run_example_case("normalterm", start_method=method)
-        _run_example_case("normalterm_thread", start_method=method)
+@pytest.mark.parametrize("case", ["complete", "normalterm", "normalterm_thread"])
+@pytest.mark.parametrize("start_method", _available_start_methods())
+def test_examples_complete_without_sigint(case: str, start_method: str) -> None:
+    _run_example_case(case, start_method=start_method)
 
 
-def test_ezmsg_toy_requires_sigint():
-    for method in _available_start_methods():
-        _run_example_case("infinite", start_method=method, signals=1)
+@pytest.mark.parametrize("start_method", _available_start_methods())
+def test_infinite_requires_sigint(start_method: str) -> None:
+    _run_example_case("infinite", start_method=start_method, signals=1)
