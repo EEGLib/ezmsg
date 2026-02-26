@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import logging
 import inspect
+import os
 import time
 import traceback
 import threading
@@ -28,6 +29,13 @@ from .subclient import Subscriber
 from .netprotocol import AddressType
 
 logger = logging.getLogger("ezmsg")
+
+STRICT_SHUTDOWN_ENV = "EZMSG_STRICT_SHUTDOWN"
+
+
+def _strict_shutdown_enabled() -> bool:
+    value = os.environ.get(STRICT_SHUTDOWN_ENV, "")
+    return value.lower() in ("1", "true", "yes", "on")
 
 
 class Complete(Exception):
@@ -491,24 +499,34 @@ def new_threaded_event_loop(
             # ev.wait()
         logger.debug("Stopping and closing task thread")
 
-        # Cancel and await remaining tasks before stopping the loop
-        async def _cancel_remaining():
-            tasks = [
-                t
-                for t in asyncio.all_tasks()
-                if t is not asyncio.current_task() and not t.done()
-            ]
-            for t in tasks:
-                t.cancel()
-            if tasks:
-                await asyncio.wait(tasks, timeout=5.0)
+        if not _strict_shutdown_enabled():
+            # Cancel and await remaining tasks before stopping the loop.
+            async def _cancel_remaining() -> int:
+                tasks = [
+                    t
+                    for t in asyncio.all_tasks()
+                    if t is not asyncio.current_task() and not t.done()
+                ]
+                for t in tasks:
+                    t.cancel()
+                if tasks:
+                    await asyncio.wait(tasks, timeout=5.0)
+                return len(tasks)
 
-        try:
-            asyncio.run_coroutine_threadsafe(
-                _cancel_remaining(), loop
-            ).result(timeout=10.0)
-        except Exception:
-            pass
+            cancelled_count = 0
+            try:
+                cancelled_count = asyncio.run_coroutine_threadsafe(
+                    _cancel_remaining(), loop
+                ).result(timeout=10.0)
+            except Exception:
+                cancelled_count = 0
+
+            if cancelled_count:
+                logger.warning(
+                    "Shutdown cancelled %d task(s). Shutdown was NOT clean; "
+                    "re-run with EZMSG_STRICT_SHUTDOWN=1 to debug tasks with poor shutdown behavior.",
+                    cancelled_count,
+                )
 
         loop.call_soon_threadsafe(loop.stop)
         thread.join()

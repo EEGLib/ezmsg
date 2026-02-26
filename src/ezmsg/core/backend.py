@@ -223,6 +223,15 @@ class GraphRunner:
         return self._graph_address
 
     @property
+    def strict_shutdown(self) -> bool:
+        value = os.environ.get("EZMSG_STRICT_SHUTDOWN", "")
+        return value.lower() in ("1", "true", "yes", "on")
+
+    @strict_shutdown.setter
+    def strict_shutdown(self, value: bool) -> None:
+        os.environ["EZMSG_STRICT_SHUTDOWN"] = "1" if value else "0"
+
+    @property
     def graph_server_spawned(self) -> bool:
         return self._graph_server_spawned
 
