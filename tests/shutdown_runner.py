@@ -2,6 +2,8 @@ import asyncio
 import os
 import socket
 import threading
+import signal
+import sys
 
 import ezmsg.core as ez
 
@@ -57,6 +59,14 @@ UNITS = {
 
 
 def main() -> None:
+    if os.environ.get("EZMSG_INBAND_SIGINT"):
+        def _listen() -> None:
+            for line in sys.stdin:
+                if line.strip().upper() == "SIGINT":
+                    signal.raise_signal(signal.SIGINT)
+
+        threading.Thread(target=_listen, daemon=True).start()
+
     target = os.environ.get("EZMSG_SHUTDOWN_TEST")
     if target not in UNITS:
         raise SystemExit(

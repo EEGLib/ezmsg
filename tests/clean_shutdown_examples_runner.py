@@ -2,6 +2,9 @@ import asyncio
 import os
 import time
 import multiprocessing as mp
+import signal
+import sys
+import threading
 
 import ezmsg.core as ez
 
@@ -121,6 +124,14 @@ SYSTEMS = {
 
 
 def main() -> None:
+    if os.environ.get("EZMSG_INBAND_SIGINT"):
+        def _listen() -> None:
+            for line in sys.stdin:
+                if line.strip().upper() == "SIGINT":
+                    signal.raise_signal(signal.SIGINT)
+
+        threading.Thread(target=_listen, daemon=True).start()
+
     start_method = os.environ.get("EZMSG_MP_START")
     if start_method:
         mp.set_start_method(start_method, force=True)

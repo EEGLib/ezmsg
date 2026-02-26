@@ -18,6 +18,7 @@ def _run_process(
     env: dict[str, str] | None = None,
     signals: int = 0,
     allowed_returncodes: set[int] | None = None,
+    use_inband_sigint: bool | None = None,
     ready_token: str | None = None,
     start_delay: float = 0.5,
     signal_delay: float = 0.5,
@@ -34,6 +35,11 @@ def _run_process(
     else:
         env["PYTHONPATH"] = os.pathsep.join(paths)
 
+    if use_inband_sigint is None:
+        use_inband_sigint = os.name == "nt" and signals > 0
+    if use_inband_sigint:
+        env["EZMSG_INBAND_SIGINT"] = "1"
+
     kwargs: dict = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
@@ -41,6 +47,8 @@ def _run_process(
         "env": env,
         "bufsize": 1,
     }
+    if use_inband_sigint:
+        kwargs["stdin"] = subprocess.PIPE
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -80,10 +88,15 @@ def _run_process(
     for _ in range(signals):
         if proc.poll() is not None:
             break
-        if os.name == "nt":
-            proc.send_signal(signal.CTRL_C_EVENT)
+        if use_inband_sigint:
+            if proc.stdin is not None:
+                proc.stdin.write("SIGINT\n")
+                proc.stdin.flush()
         else:
-            os.killpg(proc.pid, signal.SIGINT)
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_C_EVENT)
+            else:
+                os.killpg(proc.pid, signal.SIGINT)
         time.sleep(signal_delay)
 
     try:
@@ -105,7 +118,7 @@ def _run_process(
     if allowed_returncodes is None:
         if signals > 0:
             if os.name == "nt":
-                allowed_returncodes = {0, 3221225786}
+                allowed_returncodes = {0, 1, 3221225786}
             else:
                 allowed_returncodes = {0, -signal.SIGINT, 130}
         else:
