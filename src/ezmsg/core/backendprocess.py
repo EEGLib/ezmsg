@@ -3,7 +3,6 @@ import concurrent.futures
 import logging
 import inspect
 import os
-import sys
 import time
 import traceback
 import threading
