@@ -44,13 +44,13 @@ class SyncPublisher:
         _future_result(fut, timeout)
 
     def pause(self) -> None:
-        self._pub.pause()
+        self._loop.call_soon_threadsafe(self._pub.pause)
 
     def resume(self) -> None:
-        self._pub.resume()
+        self._loop.call_soon_threadsafe(self._pub.resume)
 
     def close(self) -> None:
-        self._pub.close()
+        self._loop.call_soon_threadsafe(self._pub.close)
 
     def wait_closed(self, timeout: float | None = None) -> None:
         fut = asyncio.run_coroutine_threadsafe(self._pub.wait_closed(), self._loop)
@@ -101,7 +101,7 @@ class SyncSubscriber:
         return _SyncZeroCopy(self._sub, self._loop, timeout)
 
     def close(self) -> None:
-        self._sub.close()
+        self._loop.call_soon_threadsafe(self._sub.close)
 
     def wait_closed(self, timeout: float | None = None) -> None:
         fut = asyncio.run_coroutine_threadsafe(self._sub.wait_closed(), self._loop)
@@ -134,6 +134,14 @@ class SyncContext:
         return self._graph_context.graph_address
 
     def __enter__(self) -> "SyncContext":
+
+        # SyncContext instances are single-use: they cannot be re-entered after shutdown.
+        if self._closed:
+            raise RuntimeError(
+                "SyncContext instances cannot be reused after shutdown; "
+                "create a new SyncContext instead."
+            )
+        
         if self._loop_cm is not None:
             return self
 
@@ -249,10 +257,10 @@ class SyncContext:
 
     def spin_once(self, timeout: float | None = 0.0) -> bool:
         """
-        Process at most one subscription callback.
+        Process any subscription callbacks ready within the timeout window.
 
-        :param timeout: Seconds to wait for a callback. Use None to block forever.
-        :return: True if a callback was processed, False otherwise.
+        :param timeout: Seconds to wait for callbacks. Use None to block forever.
+        :return: True if any callback was processed, False otherwise.
         """
         self._ensure_started()
         if self._shutdown_requested.is_set():
@@ -281,31 +289,32 @@ class SyncContext:
         finally:
             if not keep_future:
                 self._spin_future = None
-        if result is None:
+        if not result:
             return False
+        processed = False
+        for entry, cm, msg in result:
+            _, callback, zero_copy = entry
 
-        entry, cm, msg = result
-        _, callback, zero_copy = entry
-
-        try:
-            if not zero_copy:
-                msg = deepcopy(msg)
-            callback(msg)
-        except Exception:
-            logger.exception("Unhandled exception in subscription callback")
-        finally:
-            exit_fut = asyncio.run_coroutine_threadsafe(
-                cm.__aexit__(None, None, None), self._loop
-            )
             try:
-                _future_result(exit_fut, None)
-            except CacheMiss:
-                logger.warning(
-                    "Cache miss while releasing message; publisher likely exited."
-                )
+                if not zero_copy:
+                    msg = deepcopy(msg)
+                callback(msg)
             except Exception:
-                logger.exception("Failed while releasing message backpressure")
-        return True
+                logger.exception("Unhandled exception in subscription callback")
+            finally:
+                exit_fut = asyncio.run_coroutine_threadsafe(
+                    cm.__aexit__(None, None, None), self._loop
+                )
+                try:
+                    _future_result(exit_fut, None)
+                except CacheMiss:
+                    logger.warning(
+                        "Cache miss while releasing message; publisher likely exited."
+                    )
+                except Exception:
+                    logger.exception("Failed while releasing message backpressure")
+            processed = True
+        return processed
 
     def shutdown(self) -> None:
         self._shutdown_requested.set()
@@ -360,14 +369,14 @@ def spin(context: SyncContext, poll_interval: float = 0.1) -> None:
 
 
 def spin_once(context: SyncContext, timeout: float | None = 0.0) -> bool:
-    """Process at most one subscription callback."""
+    """Process any subscription callbacks ready within the timeout window."""
     return context.spin_once(timeout=timeout)
 
 
 async def _recv_any(
     entries: Iterable[tuple[SyncSubscriber, Callable[[Any], None], bool]],
     timeout: float | None,
-) -> tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any] | None:
+) -> list[tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any]]:
     async def _recv_entry(
         entry: tuple[SyncSubscriber, Callable[[Any], None], bool]
     ) -> tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any]:
@@ -386,25 +395,12 @@ async def _recv_any(
             done, pending = await asyncio.wait(
                 tasks, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
             )
-            if not done:
-                for task in pending:
-                    try:
-                        task.cancel()
-                    except RuntimeError:
-                        pass
-                await asyncio.gather(*pending, return_exceptions=True)
-                return None
-
-            for task in pending:
-                try:
-                    task.cancel()
-                except RuntimeError:
-                    pass
-            await asyncio.gather(*pending, return_exceptions=True)
-
+            results: list[
+                tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any]
+            ] = []
             for task in done:
                 try:
-                    return task.result()
+                    result = task.result()
                 except CacheMiss:
                     # Likely stale notification after publisher exit; keep waiting.
                     continue
@@ -413,10 +409,32 @@ async def _recv_any(
                 except Exception:
                     logger.exception("Sync subscription receive failed")
                     continue
+                results.append(result)
+
+            for task in pending:
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
+            pending_results = await asyncio.gather(*pending, return_exceptions=True)
+            for result in pending_results:
+                if isinstance(result, CacheMiss):
+                    continue
+                if isinstance(result, asyncio.CancelledError):
+                    continue
+                if isinstance(result, BaseException):
+                    logger.exception(
+                        "Sync subscription receive failed", exc_info=result
+                    )
+                    continue
+                results.append(result)
+
+            if results:
+                return results
 
             # Only CacheMiss/cancelled/error occurred; continue within timeout window.
             if deadline is not None and loop.time() >= deadline:
-                return None
+                return []
         finally:
             for task in tasks:
                 if not task.done():

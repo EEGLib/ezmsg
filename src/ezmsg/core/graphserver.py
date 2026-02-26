@@ -56,6 +56,7 @@ class GraphServer(threading.Thread):
     _shutdown: threading.Event
 
     _sock: socket.socket
+    _address: Address | None
     _loop: asyncio.AbstractEventLoop
 
     graph: DAG
@@ -78,11 +79,13 @@ class GraphServer(threading.Thread):
         self.clients = {}
         self._client_tasks = {}
         self.shms = {}
+        self._address = None
 
     @property
     def address(self) -> Address:
-        return Address(*self._sock.getsockname())
-
+        assert self._address is not None, "GraphServer not up yet"
+        return self._address
+        
     def start(self, address: AddressType | None = None) -> None:  # type: ignore[override]
         if address is not None:
             self._sock = create_socket(*address)
@@ -92,10 +95,13 @@ class GraphServer(threading.Thread):
             )
             self._sock = create_socket(start_port=start_port)
 
+        # Cache address immediately to avoid touching a possibly-closed socket later.
+        self._address = Address(*self._sock.getsockname())
+
         self._loop = asyncio.new_event_loop()
         super().start()
         self._server_up.wait()
-        logger.info(f'Started GraphServer at {address}')
+        logger.info(f'Started GraphServer at {self.address}')
 
     def stop(self) -> None:
         self._shutdown.set()

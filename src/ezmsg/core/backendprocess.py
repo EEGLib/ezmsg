@@ -317,12 +317,24 @@ class DefaultBackendProcess(BackendProcess):
                     else:
                         unit.shutdown()  # type: ignore
 
-            asyncio.run_coroutine_threadsafe(shutdown_units(), loop=loop).result()
+            shutdown_future = asyncio.run_coroutine_threadsafe(shutdown_units(), loop=loop)
+            try:
+                shutdown_future.result()
+            except KeyboardInterrupt:
+                logger.warning("Interrupted during unit shutdown. This may indicate units with slow shutdown methods."
+                               "Re-trying... Press ctrl-c again to terminate immediately.")
+                shutdown_future.result()
 
-            # for cache in MessageCache.values():
-            #     cache.clear()
-
-            asyncio.run_coroutine_threadsafe(context.revert(), loop=loop).result()
+            revert_future = asyncio.run_coroutine_threadsafe(context.revert(), loop=loop)
+            try:
+                revert_future.result()
+            except KeyboardInterrupt:
+                logger.warning("Interrupted during context revert."
+                               "Re-trying... (will timeout in 10 seconds)")
+                try:
+                    revert_future.result(timeout=10.0)
+                except TimeoutError:
+                    logger.warning("Timed out waiting for retry on context revert")
 
             logger.debug(f"Remaining tasks in event loop = {asyncio.all_tasks(loop)}")
 

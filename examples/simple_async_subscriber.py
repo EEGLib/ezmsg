@@ -2,7 +2,6 @@ import asyncio
 
 import ezmsg.core as ez
 
-PORT = 12345
 TOPIC = "/TEST"
 
 
