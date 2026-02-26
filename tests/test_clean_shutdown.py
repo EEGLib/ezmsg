@@ -1,141 +1,189 @@
-"""Regression tests for clean shutdown behavior.
-
-Ensures no "Task was destroyed but it is pending!" warnings or
-"RuntimeError: Event loop is closed" errors during shutdown.
-"""
-
-import asyncio
+import os
+import signal
+import subprocess
+import sys
 import threading
-import warnings
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
-from ezmsg.core.netprotocol import close_stream_writer
-from ezmsg.core.backendprocess import new_threaded_event_loop
+import time
+from pathlib import Path
 
 
-# -- close_stream_writer tests ------------------------------------------------
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = Path(__file__).with_name("shutdown_runner.py")
+EXAMPLE_RUNNER = Path(__file__).with_name("clean_shutdown_examples_runner.py")
 
 
-@pytest.mark.asyncio
-async def test_close_stream_writer_handles_runtime_error():
-    """writer.close() raising RuntimeError (event loop closed) must not propagate."""
-    writer = MagicMock(spec=asyncio.StreamWriter)
-    writer.close.side_effect = RuntimeError("Event loop is closed")
-    # Should return silently without calling wait_closed
-    await close_stream_writer(writer)
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_not_called()
+def _run_process(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    signals: int = 0,
+    allowed_returncodes: set[int] | None = None,
+    ready_token: str | None = None,
+    start_delay: float = 0.5,
+    signal_delay: float = 0.5,
+    timeout: float = 15.0,
+) -> None:
+    if env is None:
+        env = os.environ.copy()
+    env.setdefault("EZMSG_LOGLEVEL", "WARNING")
+    env.pop("EZMSG_STRICT_SHUTDOWN", None)
+    pythonpath = env.get("PYTHONPATH", "")
+    paths = [str(ROOT), str(ROOT / "src")]
+    if pythonpath:
+        env["PYTHONPATH"] = os.pathsep.join(paths + [pythonpath])
+    else:
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+
+    kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "env": env,
+        "bufsize": 1,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["preexec_fn"] = os.setsid
+
+    proc = subprocess.Popen(cmd, **kwargs)
+
+    ready = threading.Event()
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    def _reader(stream, sink: list[str]) -> None:
+        for line in iter(stream.readline, ""):
+            sink.append(line)
+            if ready_token and ready_token in line:
+                ready.set()
+        stream.close()
+
+    t_out = threading.Thread(target=_reader, args=(proc.stdout, stdout_lines))
+    t_err = threading.Thread(target=_reader, args=(proc.stderr, stderr_lines))
+    t_out.start()
+    t_err.start()
+
+    if ready_token:
+        if not ready.wait(timeout=5.0):
+            if proc.poll() is not None:
+                out = "".join(stdout_lines)
+                err = "".join(stderr_lines)
+                raise AssertionError(
+                    f"Process exited before {ready_token}. rc={proc.returncode}\n"
+                    f"stdout:\n{out}\n"
+                    f"stderr:\n{err}"
+                )
+    else:
+        time.sleep(start_delay)
+
+    for _ in range(signals):
+        if proc.poll() is not None:
+            break
+        if os.name == "nt":
+            proc.send_signal(signal.CTRL_C_EVENT)
+        else:
+            os.killpg(proc.pid, signal.SIGINT)
+        time.sleep(signal_delay)
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5.0)
+        out = "".join(stdout_lines)
+        err = "".join(stderr_lines)
+        raise AssertionError(
+            "Process did not exit in time\n"
+            f"stdout:\n{out}\n"
+            f"stderr:\n{err}"
+        )
+
+    t_out.join(timeout=2.0)
+    t_err.join(timeout=2.0)
+
+    if allowed_returncodes is None:
+        if signals > 0:
+            if os.name == "nt":
+                allowed_returncodes = {0, 3221225786}
+            else:
+                allowed_returncodes = {0, -signal.SIGINT, 130}
+        else:
+            allowed_returncodes = {0}
+
+    if proc.returncode not in allowed_returncodes:
+        out = "".join(stdout_lines)
+        err = "".join(stderr_lines)
+        raise AssertionError(
+            f"Unexpected return code: {proc.returncode}\n"
+            f"stdout:\n{out}\n"
+            f"stderr:\n{err}"
+        )
 
 
-@pytest.mark.asyncio
-async def test_close_stream_writer_normal():
-    """Normal close path still works: close() + wait_closed()."""
-    writer = MagicMock(spec=asyncio.StreamWriter)
-    writer.wait_closed = AsyncMock()
-    await close_stream_writer(writer)
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_close_stream_writer_connection_reset():
-    """ConnectionResetError from wait_closed is suppressed."""
-    writer = MagicMock(spec=asyncio.StreamWriter)
-    writer.wait_closed = AsyncMock(side_effect=ConnectionResetError)
-    await close_stream_writer(writer)
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_close_stream_writer_broken_pipe():
-    """BrokenPipeError from wait_closed is suppressed."""
-    writer = MagicMock(spec=asyncio.StreamWriter)
-    writer.wait_closed = AsyncMock(side_effect=BrokenPipeError)
-    await close_stream_writer(writer)
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_awaited_once()
-
-
-# -- new_threaded_event_loop shutdown tests ------------------------------------
-
-
-def test_threaded_loop_cancels_pending_tasks_on_exit():
-    """Pending tasks in the loop must be cancelled before the loop closes,
-    so Python does not emit 'Task was destroyed but it is pending!' warnings."""
-    task_was_cancelled = threading.Event()
-
-    async def long_running():
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            task_was_cancelled.set()
-            raise
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-
-        with new_threaded_event_loop() as loop:
-            # Schedule a task that will never complete on its own
-            asyncio.run_coroutine_threadsafe(long_running(), loop)
-            # Give the task time to start
-            asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(
-                timeout=2.0
-            )
-        # Exiting the context manager should cancel and await the task
-
-    task_was_cancelled.wait(timeout=5.0)
-    assert task_was_cancelled.is_set(), "Pending task was not cancelled during shutdown"
-
-    destroyed_warnings = [
-        w for w in caught if "was destroyed but it is pending" in str(w.message)
-    ]
-    assert destroyed_warnings == [], (
-        f"Got 'Task was destroyed' warnings: {destroyed_warnings}"
+def _run_shutdown_case(target: str, *, signals: int = 1, timeout: float = 15.0) -> None:
+    env = os.environ.copy()
+    env.pop("EZMSG_STRICT_SHUTDOWN", None)
+    env["EZMSG_SHUTDOWN_TEST"] = target
+    _run_process(
+        [sys.executable, "-u", str(RUNNER)],
+        env=env,
+        signals=signals,
+        ready_token="READY",
+        timeout=timeout,
     )
 
 
-def test_threaded_loop_clean_exit_no_tasks():
-    """Loop with no remaining tasks shuts down cleanly."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
+def _available_start_methods() -> list[str]:
+    import multiprocessing as mp
 
-        with new_threaded_event_loop() as loop:
-            fut = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
-            fut.result(timeout=2.0)
+    available = set(mp.get_all_start_methods())
+    return [method for method in ("spawn", "fork") if method in available]
 
-    destroyed_warnings = [
-        w for w in caught if "was destroyed but it is pending" in str(w.message)
-    ]
-    assert destroyed_warnings == [], (
-        f"Got 'Task was destroyed' warnings: {destroyed_warnings}"
+
+def _run_example_case(
+    case: str,
+    *,
+    start_method: str,
+    signals: int = 0,
+    timeout: float = 20.0,
+) -> None:
+    env = os.environ.copy()
+    env["EZMSG_SHUTDOWN_EXAMPLE"] = case
+    env["EZMSG_MP_START"] = start_method
+    _run_process(
+        [sys.executable, "-u", str(EXAMPLE_RUNNER)],
+        env=env,
+        signals=signals,
+        ready_token="READY",
+        timeout=timeout,
+        start_delay=1.0,
     )
 
 
-def test_threaded_loop_multiple_pending_tasks_cancelled():
-    """All pending tasks (not just one) are cancelled on shutdown."""
-    cancel_count = 0
-    lock = threading.Lock()
+def test_shutdown_blocking_disk():
+    _run_shutdown_case("blocking_disk")
 
-    async def sleeper():
-        nonlocal cancel_count
-        try:
-            await asyncio.sleep(3600)
-        except asyncio.CancelledError:
-            with lock:
-                cancel_count += 1
-            raise
 
-    with new_threaded_event_loop() as loop:
-        for _ in range(5):
-            asyncio.run_coroutine_threadsafe(sleeper(), loop)
-        # Let them all start
-        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), loop).result(timeout=2.0)
+def test_shutdown_blocking_socket():
+    _run_shutdown_case("blocking_socket")
 
-    # Brief wait for cancel callbacks
-    import time
 
-    time.sleep(0.2)
-    assert cancel_count == 5, f"Expected 5 cancellations, got {cancel_count}"
+def test_shutdown_exception_on_cancel():
+    _run_shutdown_case("exception_on_cancel")
+
+
+def test_shutdown_ignore_cancel():
+    _run_shutdown_case("ignore_cancel", signals=2)
+
+
+def test_examples_complete_without_sigint():
+    for method in _available_start_methods():
+        _run_example_case("complete", start_method=method)
+        _run_example_case("normalterm", start_method=method)
+        _run_example_case("normalterm_thread", start_method=method)
+
+
+def test_ezmsg_toy_requires_sigint():
+    for method in _available_start_methods():
+        _run_example_case("infinite", start_method=method, signals=1)
