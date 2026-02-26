@@ -64,6 +64,34 @@ def test_sync_backpressure_blocks_publish():
         spin_thread.join(timeout=1.0)
 
 
+def test_spin_once_processes_all_ready_callbacks():
+    host = "127.0.0.1"
+    port = _free_port()
+
+    with ez.sync.init((host, port), auto_start=True) as ctx:
+        received: list[tuple[str, str]] = []
+
+        def on_a(msg: str) -> None:
+            received.append(("A", msg))
+
+        def on_b(msg: str) -> None:
+            received.append(("B", msg))
+
+        ctx.create_subscription("/A", callback=on_a, zero_copy=True)
+        ctx.create_subscription("/B", callback=on_b, zero_copy=True)
+
+        pub_a = ctx.create_publisher("/A", num_buffers=1, force_tcp=True)
+        pub_b = ctx.create_publisher("/B", num_buffers=1, force_tcp=True)
+
+        time.sleep(0.05)
+        pub_a.publish("one")
+        pub_b.publish("two")
+        time.sleep(0.05)
+
+        assert ctx.spin_once(timeout=0.2) is True
+        assert set(received) == {("A", "one"), ("B", "two")}
+
+
 @pytest.mark.asyncio
 async def test_recv_any_cachemiss_does_not_raise():
     class DummySub:
@@ -78,11 +106,11 @@ async def test_recv_any_cachemiss_does_not_raise():
 
     entry = (DummySyncSub(), lambda _: None, True)
     result = await sync_mod._recv_any([entry], timeout=0.01)
-    assert result is None
+    assert result == []
 
 
 @pytest.mark.asyncio
-async def test_recv_any_cleans_up_non_winner_contexts():
+async def test_recv_any_returns_all_ready_contexts():
     class DummyCM:
         def __init__(self, name: str, gate: asyncio.Event | None) -> None:
             self._name = name
@@ -131,12 +159,13 @@ async def test_recv_any_cleans_up_non_winner_contexts():
     asyncio.create_task(_release_pending())
 
     result = await sync_mod._recv_any(entries, timeout=0.2)
-    assert result is not None
+    assert len(result) == 3
 
-    _, winner_cm, _ = result
-    await winner_cm.__aexit__(None, None, None)
+    returned_cms = {cm for _, cm, _ in result}
+    assert returned_cms == set(cms)
+
+    for _, cm, _ in result:
+        await cm.__aexit__(None, None, None)
 
     for cm in cms:
-        if cm is winner_cm:
-            continue
         assert cm.exited.is_set()
