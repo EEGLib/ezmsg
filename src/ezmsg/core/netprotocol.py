@@ -224,7 +224,10 @@ async def read_str(reader: asyncio.StreamReader) -> str:
 
 
 async def close_stream_writer(writer: asyncio.StreamWriter):
-    writer.close()
+    try:
+        writer.close()
+    except RuntimeError:
+        return  # Event loop is closed, transport is already gone
     # ConnectionResetError can be raised on wait_closed.
     # See: https://github.com/python/cpython/issues/83037
     try:
