@@ -114,7 +114,7 @@ class ModifyAxis(ez.Unit):
         self.apply_settings(msg)
         self._transformer = ModifyAxisTransformer(self.SETTINGS)
 
-    @ez.subscriber(INPUT_SIGNAL, zero_copy=True)
+    @ez.subscriber(INPUT_SIGNAL)
     @ez.publisher(OUTPUT_SIGNAL)
     async def on_message(self, message: AxisArray) -> AsyncGenerator:
         ret = self._transformer(message)
