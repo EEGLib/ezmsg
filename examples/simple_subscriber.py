@@ -1,4 +1,3 @@
-import time
 import ezmsg.core as ez
 
 TOPIC = "/TEST"
@@ -10,6 +9,7 @@ def main(host: str = "127.0.0.1", port: int = 12345) -> None:
 
         def on_message(msg: str) -> None:
             # Uncomment if you want to witness backpressure!
+            # import time
             # time.sleep(1.0)
             print(msg)
 

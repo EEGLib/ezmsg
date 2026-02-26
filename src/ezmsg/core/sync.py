@@ -44,13 +44,13 @@ class SyncPublisher:
         _future_result(fut, timeout)
 
     def pause(self) -> None:
-        self._pub.pause()
+        self._loop.call_soon_threadsafe(self._pub.pause)
 
     def resume(self) -> None:
-        self._pub.resume()
+        self._loop.call_soon_threadsafe(self._pub.resume)
 
     def close(self) -> None:
-        self._pub.close()
+        self._loop.call_soon_threadsafe(self._pub.close)
 
     def wait_closed(self, timeout: float | None = None) -> None:
         fut = asyncio.run_coroutine_threadsafe(self._pub.wait_closed(), self._loop)
@@ -101,7 +101,7 @@ class SyncSubscriber:
         return _SyncZeroCopy(self._sub, self._loop, timeout)
 
     def close(self) -> None:
-        self._sub.close()
+        self._loop.call_soon_threadsafe(self._sub.close)
 
     def wait_closed(self, timeout: float | None = None) -> None:
         fut = asyncio.run_coroutine_threadsafe(self._sub.wait_closed(), self._loop)
@@ -134,6 +134,14 @@ class SyncContext:
         return self._graph_context.graph_address
 
     def __enter__(self) -> "SyncContext":
+
+        # SyncContext instances are single-use: they cannot be re-entered after shutdown.
+        if self._closed:
+            raise RuntimeError(
+                "SyncContext instances cannot be reused after shutdown; "
+                "create a new SyncContext instead."
+            )
+        
         if self._loop_cm is not None:
             return self
 
@@ -368,6 +376,22 @@ async def _recv_any(
     entries: Iterable[tuple[SyncSubscriber, Callable[[Any], None], bool]],
     timeout: float | None,
 ) -> tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any] | None:
+    async def _cleanup_result(result: Any) -> None:
+        if isinstance(result, BaseException):
+            return
+        try:
+            _, cm, _ = result
+        except Exception:
+            return
+        try:
+            await cm.__aexit__(None, None, None)
+        except CacheMiss:
+            logger.warning(
+                "Cache miss while releasing message; publisher likely exited."
+            )
+        except Exception:
+            logger.exception("Failed while releasing message backpressure")
+
     async def _recv_entry(
         entry: tuple[SyncSubscriber, Callable[[Any], None], bool]
     ) -> tuple[tuple[SyncSubscriber, Callable[[Any], None], bool], Any, Any]:
@@ -392,19 +416,17 @@ async def _recv_any(
                         task.cancel()
                     except RuntimeError:
                         pass
-                await asyncio.gather(*pending, return_exceptions=True)
+                pending_results = await asyncio.gather(
+                    *pending, return_exceptions=True
+                )
+                for result in pending_results:
+                    await _cleanup_result(result)
                 return None
 
-            for task in pending:
-                try:
-                    task.cancel()
-                except RuntimeError:
-                    pass
-            await asyncio.gather(*pending, return_exceptions=True)
-
+            winner_result = None
             for task in done:
                 try:
-                    return task.result()
+                    result = task.result()
                 except CacheMiss:
                     # Likely stale notification after publisher exit; keep waiting.
                     continue
@@ -413,6 +435,24 @@ async def _recv_any(
                 except Exception:
                     logger.exception("Sync subscription receive failed")
                     continue
+                if winner_result is None:
+                    winner_result = result
+                else:
+                    await _cleanup_result(result)
+
+            for task in pending:
+                try:
+                    task.cancel()
+                except RuntimeError:
+                    pass
+            pending_results = await asyncio.gather(
+                *pending, return_exceptions=True
+            )
+            for result in pending_results:
+                await _cleanup_result(result)
+
+            if winner_result is not None:
+                return winner_result
 
             # Only CacheMiss/cancelled/error occurred; continue within timeout window.
             if deadline is not None and loop.time() >= deadline:
