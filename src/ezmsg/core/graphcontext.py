@@ -25,6 +25,10 @@ class GraphContext:
 
     :param graph_service: Optional graph service instance to use
     :type graph_service: GraphService | None
+    :param auto_start: Whether to auto-start a GraphServer if connection fails.
+        If None, defaults to auto-start only when graph_address is not provided
+        and no environment override is set.
+    :type auto_start: bool | None
 
     .. note::
     The GraphContext is typically managed automatically by the ezmsg runtime
@@ -40,11 +44,13 @@ class GraphContext:
     def __init__(
         self,
         graph_address: AddressType | None = None,
+        auto_start: bool | None = None,
     ) -> None:
         self._clients = set()
         self._edges = set()
         self._graph_address = graph_address
         self._graph_server = None
+        self._auto_start = auto_start
 
     @property
     def graph_address(self) -> AddressType | None:
@@ -130,7 +136,9 @@ class GraphContext:
         await GraphService(self.graph_address).resume()
 
     async def _ensure_servers(self) -> None:
-        self._graph_server = await GraphService(self.graph_address).ensure()
+        self._graph_server = await GraphService(self.graph_address).ensure(
+            auto_start=self._auto_start
+        )
 
     async def _shutdown_servers(self) -> None:
         if self._graph_server is not None:

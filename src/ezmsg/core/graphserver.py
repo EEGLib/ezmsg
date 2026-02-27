@@ -56,6 +56,7 @@ class GraphServer(threading.Thread):
     _shutdown: threading.Event
 
     _sock: socket.socket
+    _address: Address | None
     _loop: asyncio.AbstractEventLoop
 
     graph: DAG
@@ -78,11 +79,13 @@ class GraphServer(threading.Thread):
         self.clients = {}
         self._client_tasks = {}
         self.shms = {}
+        self._address = None
 
     @property
     def address(self) -> Address:
-        return Address(*self._sock.getsockname())
-
+        assert self._address is not None, "GraphServer not up yet"
+        return self._address
+        
     def start(self, address: AddressType | None = None) -> None:  # type: ignore[override]
         if address is not None:
             self._sock = create_socket(*address)
@@ -92,9 +95,13 @@ class GraphServer(threading.Thread):
             )
             self._sock = create_socket(start_port=start_port)
 
+        # Cache address immediately to avoid touching a possibly-closed socket later.
+        self._address = Address(*self._sock.getsockname())
+
         self._loop = asyncio.new_event_loop()
         super().start()
         self._server_up.wait()
+        logger.info(f'Started GraphServer at {self.address}')
 
     def stop(self) -> None:
         self._shutdown.set()
@@ -453,15 +460,18 @@ class GraphService:
         self._address = server.address
         return server
 
-    async def ensure(self) -> GraphServer | None:
+    async def ensure(self, auto_start: bool | None = None) -> GraphServer | None:
         """
         Try connecting to an existing server. If none is listening and no explicit
         address/environment is set, start one and return it. If an existing one is
-        found, return None.
+        found, return None. If auto_start is provided, it overrides the default
+        behavior.
         """
         server = None
         ensure_server = False
-        if self._address is None:
+        if auto_start is not None:
+            ensure_server = auto_start
+        elif self._address is None:
             # Only auto-start if env var not forcing a location
             ensure_server = self.ADDR_ENV not in os.environ
 

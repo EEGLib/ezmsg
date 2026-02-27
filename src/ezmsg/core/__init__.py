@@ -25,6 +25,10 @@ __all__ = [
     "NormalTermination",
     "GraphServer",
     "GraphContext",
+    "sync",
+    "SyncContext",
+    "SyncPublisher",
+    "SyncSubscriber",
     "run_command",
     "Publisher",
     "Subscriber",
@@ -45,6 +49,8 @@ from .backend import run, GraphRunner, GraphRunnerStartError
 from .backendprocess import Complete, NormalTermination
 from .graphserver import GraphServer
 from .graphcontext import GraphContext
+from . import sync
+from .sync import SyncContext, SyncPublisher, SyncSubscriber
 from .command import run_command
 from .pubclient import Publisher
 from .subclient import Subscriber
